@@ -1,0 +1,154 @@
+local LspClient = {}
+LspClient.__index = LspClient
+
+local function get_plugin_root()
+    local source = debug.getinfo(1, "S").source:sub(2)
+    local plugin_lua_dir = vim.fn.fnamemodify(source, ":h:h:h")
+    return vim.fn.fnamemodify(plugin_lua_dir, ":h")
+end
+
+local function find_binary()
+    local in_path = vim.fn.exepath("agent-lsp")
+    if in_path ~= "" then
+        return in_path
+    end
+
+    local project_root = get_plugin_root()
+    local release_bin = project_root .. "/target/release/agent-lsp"
+    if vim.fn.executable(release_bin) == 1 then
+        return release_bin
+    end
+
+    local debug_bin = project_root .. "/target/debug/agent-lsp"
+    if vim.fn.executable(debug_bin) == 1 then
+        return debug_bin
+    end
+
+    return nil
+end
+
+function LspClient.new(opts)
+    local self = setmetatable({}, LspClient)
+    self.user_cmd = opts.cmd
+    self.client_id = nil
+    self.on_apply_edit = opts.on_apply_edit
+    return self
+end
+
+function LspClient:_resolve_cmd()
+    if self.user_cmd then
+        return self.user_cmd
+    end
+
+    local binary = find_binary()
+    if binary then
+        return { binary }
+    end
+
+    return nil
+end
+
+function LspClient:ensure_client(bufnr)
+    if self.client_id and vim.lsp.get_client_by_id(self.client_id) then
+        if not vim.lsp.buf_is_attached(bufnr, self.client_id) then
+            vim.lsp.buf_attach_client(bufnr, self.client_id)
+        end
+        return self.client_id
+    end
+
+    local cmd = self:_resolve_cmd()
+    if not cmd then
+        vim.notify("[AgentAmp] LSP binary not found. Build with 'cargo build --release' or specify cmd in setup()", vim.log.levels.ERROR)
+        return nil
+    end
+
+    local original_handler = vim.lsp.handlers["workspace/applyEdit"]
+
+    local client_id = vim.lsp.start({
+        name = "agent-lsp",
+        cmd = cmd,
+        root_dir = vim.fn.getcwd(),
+        handlers = {
+            ["workspace/applyEdit"] = function(err, result, ctx, config)
+                if self.on_apply_edit then
+                    self.on_apply_edit(err, result, ctx)
+                end
+                if original_handler then
+                    return original_handler(err, result, ctx, config)
+                end
+                return { applied = true }
+            end,
+        },
+    }, {
+        bufnr = bufnr,
+        reuse_client = function(client, config)
+            return client.name == config.name
+        end,
+    })
+
+    if not client_id then
+        vim.notify("[AgentAmp] Failed to start LSP client", vim.log.levels.ERROR)
+        return nil
+    end
+
+    self.client_id = client_id
+    return client_id
+end
+
+function LspClient:request_code_actions(bufnr, callback)
+    local client_id = self:ensure_client(bufnr)
+    if not client_id then
+        callback(nil)
+        return
+    end
+
+    local pos = vim.api.nvim_win_get_cursor(0)
+    local line = pos[1] - 1
+    local character = pos[2]
+
+    local params = {
+        textDocument = vim.lsp.util.make_text_document_params(bufnr),
+        range = {
+            start = { line = line, character = character },
+            ["end"] = { line = line, character = character },
+        },
+        context = {
+            diagnostics = {},
+            only = { "quickfix" },
+        },
+    }
+
+    vim.lsp.buf_request(bufnr, "textDocument/codeAction", params, function(err, result)
+        if err then
+            vim.notify("[AgentAmp] Code action request failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+            callback(nil)
+            return
+        end
+        callback(result)
+    end)
+end
+
+function LspClient:execute_command(bufnr, command)
+    local client_id = self:ensure_client(bufnr)
+    if not client_id then
+        return
+    end
+
+    local client = vim.lsp.get_client_by_id(client_id)
+    if not client then
+        vim.notify("[AgentAmp] LSP client not found", vim.log.levels.ERROR)
+        return
+    end
+
+    client.request("workspace/executeCommand", command, function(err, _result)
+        if err then
+            vim.notify("[AgentAmp] Execute command failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+        end
+    end, bufnr)
+end
+
+function LspClient:get_client_id()
+    return self.client_id
+end
+
+return LspClient
