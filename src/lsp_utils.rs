@@ -1,6 +1,6 @@
 use std::error::Error;
 
-use lsp_server::{Connection, Message, Request, Response};
+use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::{
     request::ApplyWorkspaceEdit, request::Request as _, ApplyWorkspaceEditParams,
     OptionalVersionedTextDocumentIdentifier, Position, Range, TextDocumentEdit, TextEdit, Url,
@@ -98,6 +98,21 @@ impl<'a> LspClient<'a> {
 
         info!("Sending workspace/applyEdit request");
         self.connection.sender.send(Message::Request(request))?;
+        Ok(())
+    }
+
+    pub fn send_notification<T: serde::Serialize>(
+        &self,
+        method: &str,
+        params: T,
+    ) -> Result<(), Box<dyn Error + Sync + Send>> {
+        let notification = Notification {
+            method: method.to_string(),
+            params: serde_json::to_value(params)?,
+        };
+        self.connection
+            .sender
+            .send(Message::Notification(notification))?;
         Ok(())
     }
 }

@@ -9,6 +9,7 @@ use lsp_types::{
     CompletionParams, DidChangeTextDocumentParams, DidOpenTextDocumentParams, ExecuteCommandParams,
     Url,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{error, info};
 
@@ -17,6 +18,14 @@ use crate::document_store::DocumentStore;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
 
 pub const COMMAND_IMPL_FUNCTION: &str = "amp.implFunction";
+pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "amp/implFunctionProgress";
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImplFunctionProgressParams {
+    pub uri: String,
+    pub line: u32,
+    pub preview: String,
+}
 
 pub struct RequestHandler<'a> {
     connection: &'a Connection,
@@ -153,12 +162,25 @@ impl<'a> RequestHandler<'a> {
             .to_string_lossy()
             .to_string();
 
-        match self.amp_client.implement_function(
+        let uri_str = uri.to_string();
+        match self.amp_client.implement_function_streaming(
             &file_path,
             line,
             character,
             &language_id,
             &doc.text,
+            |preview| {
+                let params = ImplFunctionProgressParams {
+                    uri: uri_str.clone(),
+                    line,
+                    preview: preview.to_string(),
+                };
+                if let Err(e) =
+                    lsp_client.send_notification(NOTIFICATION_IMPL_FUNCTION_PROGRESS, params)
+                {
+                    error!("Failed to send progress notification: {}", e);
+                }
+            },
         ) {
             Ok(implementation) => {
                 let edit = WorkspaceEditBuilder::create_line_insert(
