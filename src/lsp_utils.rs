@@ -1,5 +1,7 @@
 use std::error::Error;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use crossbeam_channel::Sender;
 use lsp_server::{Connection, Message, Notification, Request, Response};
 use lsp_types::{
     request::ApplyWorkspaceEdit, request::Request as _, ApplyWorkspaceEditParams,
@@ -8,17 +10,25 @@ use lsp_types::{
 };
 use tracing::info;
 
-pub struct LspClient<'a> {
-    connection: &'a Connection,
+static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub struct LspClient {
+    sender: Sender<Message>,
 }
 
-impl<'a> LspClient<'a> {
-    pub fn new(connection: &'a Connection) -> Self {
-        Self { connection }
+impl LspClient {
+    pub fn new(connection: &Connection) -> Self {
+        Self {
+            sender: connection.sender.clone(),
+        }
+    }
+
+    pub fn new_from_sender(sender: Sender<Message>) -> Self {
+        Self { sender }
     }
 
     pub fn send_response(&self, response: Response) -> Result<(), Box<dyn Error + Sync + Send>> {
-        self.connection.sender.send(Message::Response(response))?;
+        self.sender.send(Message::Response(response))?;
         Ok(())
     }
 
@@ -82,13 +92,8 @@ impl<'a> LspClient<'a> {
             edit,
         };
 
-        let request_id = lsp_server::RequestId::from(format!(
-            "apply_edit_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-        ));
+        let request_id = REQUEST_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let request_id = lsp_server::RequestId::from(format!("apply_edit_{}", request_id));
 
         let request = Request {
             id: request_id,
@@ -97,7 +102,7 @@ impl<'a> LspClient<'a> {
         };
 
         info!("Sending workspace/applyEdit request");
-        self.connection.sender.send(Message::Request(request))?;
+        self.sender.send(Message::Request(request))?;
         Ok(())
     }
 
@@ -110,9 +115,7 @@ impl<'a> LspClient<'a> {
             method: method.to_string(),
             params: serde_json::to_value(params)?,
         };
-        self.connection
-            .sender
-            .send(Message::Notification(notification))?;
+        self.sender.send(Message::Notification(notification))?;
         Ok(())
     }
 }
@@ -125,7 +128,6 @@ impl WorkspaceEditBuilder {
         current_text: &str,
         line: u32,
         implementation: &str,
-        version: i32,
     ) -> WorkspaceEdit {
         let line_start = Position { line, character: 0 };
         let line_end = Position {
@@ -149,7 +151,7 @@ impl WorkspaceEditBuilder {
             document_changes: Some(lsp_types::DocumentChanges::Edits(vec![TextDocumentEdit {
                 text_document: OptionalVersionedTextDocumentIdentifier {
                     uri: uri.clone(),
-                    version: Some(version),
+                    version: None,
                 },
                 edits: vec![lsp_types::OneOf::Left(edit)],
             }])),

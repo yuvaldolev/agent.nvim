@@ -42,6 +42,7 @@ cargo test test_single_function_modification -- --ignored --nocapture
 
 - `test_execute_command_prints_modifications`: Calls amp CLI and prints the workspace/applyEdit modifications for visual inspection
 - `test_single_function_modification`: Verifies that only the targeted function is modified when there are multiple functions in a file
+- `test_concurrent_implementations`: Tests concurrent function implementations across multiple files with job queue serialization
 
 ## Architecture
 
@@ -52,6 +53,7 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - **main.rs**: `Server` struct with `initialize()` and `run()` methods, message dispatch loop
 - **handlers.rs**: `RequestHandler` and `NotificationHandler` for LSP message dispatch
 - **document_store.rs**: `DocumentStore` with `Arc<Mutex<HashMap<Url, Document>>>` for tracking open files
+- **job_queue.rs**: `JobQueue` for per-file serialization of concurrent implementations with automatic line tracking
 - **amp.rs**: `AmpClient` with `implement_function_streaming()` that reads `amp` CLI stdout line-by-line and calls progress callback
 - **lsp_utils.rs**: `LspClient` (response helpers) and `WorkspaceEditBuilder` (workspace edits)
 
@@ -61,11 +63,13 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - `textDocument/completion`: Stub (returns null)
 - `textDocument/codeAction`: Returns "Implement function with Amp" command
 - `workspace/executeCommand`: Handles `amp.implFunction`, calls Amp CLI with streaming, sends `workspace/applyEdit`
-- `amp/implFunctionProgress`: Server-to-client notification with streaming preview text (params: `uri`, `line`, `preview`)
+- `amp/implFunctionProgress`: Server-to-client notification with streaming preview text (params: `job_id`, `uri`, `line`, `preview`)
 
 ## Design Decisions
 
 - **Language agnostic**: Server does NOT parse code. Passes cursor position and file contents to Amp CLI, which determines function context.
+- **Per-file serialization**: Uses `JobQueue` to serialize concurrent implementations within the same file, preventing race conditions when line numbers shift.
+- **Line tracking**: Pending jobs have their line numbers automatically adjusted when earlier implementations are applied.
 - **Versioned edits**: WorkspaceEdit includes `VersionedTextDocumentIdentifier` for concurrency safety.
 - **Logging**: Uses `tracing` to stderr (required since stdio is used for LSP transport).
 

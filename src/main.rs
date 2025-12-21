@@ -1,9 +1,11 @@
 mod amp;
 mod document_store;
 mod handlers;
+mod job_queue;
 mod lsp_utils;
 
 use std::error::Error;
+use std::sync::Arc;
 
 use lsp_server::{Connection, Message};
 use lsp_types::{
@@ -14,22 +16,22 @@ use lsp_types::{
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use crate::amp::AmpClient;
 use crate::document_store::DocumentStore;
 use crate::handlers::{NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION};
+use crate::job_queue::JobQueue;
 
 struct Server {
     connection: Connection,
-    document_store: DocumentStore,
-    amp_client: AmpClient,
+    document_store: Arc<DocumentStore>,
+    job_queue: Arc<JobQueue>,
 }
 
 impl Server {
     fn new(connection: Connection) -> Self {
         Self {
             connection,
-            document_store: DocumentStore::new(),
-            amp_client: AmpClient::new(),
+            document_store: Arc::new(DocumentStore::new()),
+            job_queue: Arc::new(JobQueue::new()),
         }
     }
 
@@ -71,8 +73,11 @@ impl Server {
                     if self.connection.handle_shutdown(&req)? {
                         break;
                     }
-                    let handler =
-                        RequestHandler::new(&self.connection, &self.document_store, &self.amp_client);
+                    let handler = RequestHandler::new(
+                        &self.connection,
+                        self.document_store.clone(),
+                        self.job_queue.clone(),
+                    );
                     handler.handle(&req)?;
                 }
                 Message::Notification(notification) => {

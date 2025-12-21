@@ -13,8 +13,9 @@ agent.nvim provides a seamless integration between Neovim and the Amp AI coding 
 
 - **`:AmpImplementFunction`** — Implement the function at the cursor position using AI
 - **Streaming progress** — See incremental AI output as ghost text while the implementation is being generated
-- Animated spinner feedback while waiting for AI response
-- Automatic code insertion via LSP workspace edits
+- **Concurrent implementations** — Implement multiple functions simultaneously with per-file serialization
+- Animated spinner feedback while waiting for AI response (supports multiple concurrent spinners)
+- Automatic code insertion via LSP workspace edits with line tracking
 - Language-agnostic design (works with any programming language)
 
 ## Requirements
@@ -113,6 +114,7 @@ cargo test --test e2e_test -- --ignored --nocapture
 | `test_unknown_request_returns_error` | Verifies unknown methods return MethodNotFound error |
 | `test_execute_command_prints_modifications` | *(ignored)* Calls amp CLI and prints workspace edits |
 | `test_single_function_modification` | *(ignored)* Verifies targeted function modification |
+| `test_concurrent_implementations` | *(ignored)* Tests concurrent function implementations across multiple files |
 
 ## Architecture
 
@@ -154,6 +156,7 @@ src/
 ├── main.rs           # Server struct, initialization, message loop
 ├── handlers.rs       # Request and notification handlers
 ├── document_store.rs # In-memory document tracking
+├── job_queue.rs      # Per-file job serialization with line tracking
 ├── amp.rs            # Amp CLI integration
 └── lsp_utils.rs      # LSP response helpers and workspace edit builder
 ```
@@ -162,6 +165,8 @@ src/
 
 - **Language agnostic**: The server does not parse code. It passes cursor position and file contents to the Amp CLI, which determines function context.
 - **Incremental sync**: Uses `TextDocumentSyncKind::INCREMENTAL` for efficient document updates.
+- **Per-file serialization**: Uses `JobQueue` to serialize concurrent implementations within the same file, preventing race conditions when line numbers shift.
+- **Line tracking**: Pending jobs have their line numbers automatically adjusted when earlier implementations are applied.
 - **Versioned edits**: `WorkspaceEdit` includes `VersionedTextDocumentIdentifier` for concurrency safety.
 - **Logging**: Uses `tracing` crate, outputting to stderr (required since stdio is used for LSP transport).
 
@@ -196,7 +201,7 @@ nvim-plugin/
 |--------|-------------|
 | `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AmpImplementFunction` command, handles progress callbacks |
 | `lsp.lua` | `LspClient` class. Manages LSP lifecycle, automatic binary resolution, handles `workspace/applyEdit` and `amp/implFunctionProgress` notifications |
-| `spinner.lua` | `Spinner` class. Shows animated progress indicator with 40s timeout and ghost text preview support |
+| `spinner.lua` | `SpinnerManager` class. Manages multiple concurrent spinners with job tracking, 40s timeout and ghost text preview support |
 
 **Binary Resolution (`lsp.lua`):**
 
@@ -218,6 +223,7 @@ flowchart LR
     subgraph LSP["agent-lsp"]
         E[main.rs] --> F[handlers.rs]
         F --> G[document_store.rs]
+        F --> K[job_queue.rs]
         F --> H[amp.rs]
         F --> I[lsp_utils.rs]
     end

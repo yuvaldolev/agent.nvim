@@ -1,4 +1,4 @@
-local Spinner = require("agent_amp.spinner")
+local SpinnerManager = require("agent_amp.spinner")
 local LspClient = require("agent_amp.lsp")
 
 local AgentAmp = {}
@@ -9,7 +9,8 @@ local instance = nil
 function AgentAmp.new(opts)
     local self = setmetatable({}, AgentAmp)
     self.opts = opts or {}
-    self.spinner = Spinner.new()
+    self.spinner_manager = SpinnerManager.new()
+    self.pending_jobs = {}
     self.lsp_client = LspClient.new({
         cmd = self.opts.cmd,
         on_apply_edit = function(err, result, ctx)
@@ -22,16 +23,75 @@ function AgentAmp.new(opts)
     return self
 end
 
-function AgentAmp:_on_apply_edit(_err, _result, _ctx)
-    if self.spinner:is_running() then
-        self.spinner:stop()
+function AgentAmp:_on_apply_edit(_err, result, _ctx)
+    if not result or not result.edit then
+        return
+    end
+
+    local edit = result.edit
+    local document_changes = edit.documentChanges or {}
+
+    for _, change in ipairs(document_changes) do
+        if change.textDocument and change.textDocument.uri then
+            local uri = change.textDocument.uri
+            for _, text_edit in ipairs(change.edits or {}) do
+                local line = text_edit.range and text_edit.range.start and text_edit.range.start.line
+                if line then
+                    local job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+                    if job_id then
+                        self.spinner_manager:stop(job_id)
+                        vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
+                        return
+                    end
+                end
+            end
+        end
+    end
+
+    local changes = edit.changes or {}
+    for uri, edits in pairs(changes) do
+        for _, text_edit in ipairs(edits) do
+            local line = text_edit.range and text_edit.range.start and text_edit.range.start.line
+            if line then
+                local job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+                if job_id then
+                    self.spinner_manager:stop(job_id)
+                    vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
+                    return
+                end
+            end
+        end
+    end
+
+    if self.spinner_manager:has_running() then
         vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
     end
 end
 
 function AgentAmp:_on_progress(params)
-    if self.spinner:is_running() and params and params.preview then
-        self.spinner:set_preview(params.preview)
+    if not params or not params.job_id then
+        return
+    end
+
+    local server_job_id = params.job_id
+    local uri = params.uri
+    local line = params.line
+
+    if not self.spinner_manager:is_running(server_job_id) then
+        local pending_job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+        if pending_job_id and pending_job_id:match("^pending%-") then
+            self.spinner_manager:stop(pending_job_id)
+            self.pending_jobs[pending_job_id] = nil
+
+            local bufnr = vim.uri_to_bufnr(uri)
+            if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+                self.spinner_manager:start(server_job_id, bufnr, line)
+            end
+        end
+    end
+
+    if params.preview then
+        self.spinner_manager:set_preview(server_job_id, params.preview)
     end
 end
 
@@ -68,9 +128,19 @@ function AgentAmp:implement_function()
             return
         end
 
-        self.spinner:start(bufnr, line)
+        local job_id = self:_generate_pending_job_id()
+        self.pending_jobs[job_id] = {
+            bufnr = bufnr,
+            line = line,
+        }
+
+        self.spinner_manager:start(job_id, bufnr, line)
         self.lsp_client:execute_command(bufnr, amp_action)
     end)
+end
+
+function AgentAmp:_generate_pending_job_id()
+    return string.format("pending-%d-%d", vim.loop.now(), math.random(1000000))
 end
 
 local M = {}
@@ -83,25 +153,20 @@ function M.setup(opts)
         M.implement_function()
     end, { desc = "Implement function with Amp AI" })
 
-    -- Create augroup for AgentAmp autocmds
     local augroup = vim.api.nvim_create_augroup("AgentAmp", { clear = true })
 
-    -- Start the LSP and attach to current buffer (deferred to allow Neovim to fully initialize)
     vim.schedule(function()
         local bufnr = vim.api.nvim_get_current_buf()
         if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].buftype == "" then
             instance.lsp_client:start(bufnr)
         else
-            -- Start without a buffer if current buffer is not a normal file buffer
             instance.lsp_client:start()
         end
     end)
 
-    -- Attach LSP to newly opened buffers
     vim.api.nvim_create_autocmd("BufEnter", {
         group = augroup,
         callback = function(args)
-            -- Only attach to normal file buffers (not special buffers like terminals, quickfix, etc.)
             if vim.bo[args.buf].buftype == "" then
                 instance.lsp_client:attach_buffer(args.buf)
             end

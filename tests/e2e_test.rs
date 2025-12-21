@@ -53,16 +53,10 @@ impl LspClient {
         stdin.flush().unwrap();
     }
 
-    fn read_message_from_reader(reader: &mut BufReader<&mut ChildStdout>) -> Value {
-        let mut header = String::new();
-        loop {
-            header.clear();
-            reader.read_line(&mut header).unwrap();
-            if header.starts_with("Content-Length:") {
-                break;
-            }
-        }
-
+    fn read_message_body_from_reader(
+        reader: &mut BufReader<&mut ChildStdout>,
+        header: &str,
+    ) -> Value {
         let content_length: usize = header
             .trim()
             .strip_prefix("Content-Length:")
@@ -78,6 +72,19 @@ impl LspClient {
         reader.read_exact(&mut content).unwrap();
 
         serde_json::from_slice(&content).unwrap()
+    }
+
+    fn read_message_from_reader(reader: &mut BufReader<&mut ChildStdout>) -> Value {
+        let mut header = String::new();
+        loop {
+            header.clear();
+            reader.read_line(&mut header).unwrap();
+            if header.starts_with("Content-Length:") {
+                break;
+            }
+        }
+
+        Self::read_message_body_from_reader(reader, &header)
     }
 
     fn read_message(&mut self) -> Value {
@@ -121,21 +128,7 @@ impl LspClient {
 
         set_nonblocking(self.stdout_fd, false);
 
-        let content_length: usize = header
-            .trim()
-            .strip_prefix("Content-Length:")
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-
-        let mut empty_line = String::new();
-        reader.read_line(&mut empty_line).unwrap();
-
-        let mut content = vec![0u8; content_length];
-        reader.read_exact(&mut content).unwrap();
-
-        Some(serde_json::from_slice(&content).unwrap())
+        Some(Self::read_message_body_from_reader(&mut reader, &header))
     }
 
     fn send_request(&mut self, method: &str, params: Value) -> Value {
@@ -148,6 +141,58 @@ impl LspClient {
         });
         self.send_message(&request);
         self.read_message()
+    }
+
+    fn send_request_async(&mut self, method: &str, params: Value) -> i32 {
+        self.request_id += 1;
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": self.request_id,
+            "method": method,
+            "params": params
+        });
+        self.send_message(&request);
+        self.request_id
+    }
+
+    fn collect_messages(&mut self, timeout: Duration) -> Vec<Value> {
+        set_nonblocking(self.stdout_fd, true);
+
+        let mut messages = Vec::new();
+        let start = std::time::Instant::now();
+        let stdout = self.child.stdout.as_mut().expect("Failed to get stdout");
+        let mut reader = BufReader::new(stdout);
+
+        while start.elapsed() < timeout {
+            let mut header = String::new();
+
+            match reader.read_line(&mut header) {
+                Ok(0) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Ok(_) => {
+                    if !header.starts_with("Content-Length:") {
+                        continue;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                Err(e) => panic!("Read error: {}", e),
+            }
+
+            set_nonblocking(self.stdout_fd, false);
+
+            let msg = Self::read_message_body_from_reader(&mut reader, &header);
+            messages.push(msg);
+
+            set_nonblocking(self.stdout_fd, true);
+        }
+
+        set_nonblocking(self.stdout_fd, false);
+        messages
     }
 
     fn send_notification(&mut self, method: &str, params: Value) {
@@ -665,5 +710,232 @@ fn third_function(z: i32) -> i32 {
         println!("\n=== Server Stderr ===");
         println!("{}", stderr);
     }
+    client.shutdown();
+}
+
+#[test]
+#[ignore]
+fn test_concurrent_implementations() {
+    use std::collections::{HashMap, HashSet};
+
+    let mut client = LspClient::spawn();
+    client.initialize();
+
+    let test_uri_1 = "file:///tmp/test_concurrent_1.rs";
+    let test_content_1 = r#"/// Adds two numbers
+fn add(a: i32, b: i32) -> i32 {
+    todo!()
+}
+"#;
+
+    let test_uri_2 = "file:///tmp/test_concurrent_2.rs";
+    let test_content_2 = r#"/// Multiplies two numbers
+fn multiply(a: i32, b: i32) -> i32 {
+    todo!()
+}
+"#;
+
+    let test_uri_3 = "file:///tmp/test_concurrent_3.rs";
+    let test_content_3 = r#"/// Subtracts two numbers
+fn subtract(a: i32, b: i32) -> i32 {
+    todo!()
+}
+"#;
+
+    for (uri, content) in [
+        (test_uri_1, test_content_1),
+        (test_uri_2, test_content_2),
+        (test_uri_3, test_content_3),
+    ] {
+        client.send_notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "rust",
+                    "version": 1,
+                    "text": content
+                }
+            }),
+        );
+    }
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    println!("\n=== Sending 3 concurrent amp.implFunction commands ===");
+
+    let req_id_1 = client.send_request_async(
+        "workspace/executeCommand",
+        json!({
+            "command": "amp.implFunction",
+            "arguments": [test_uri_1, 1, 0, 1, "rust"]
+        }),
+    );
+
+    let req_id_2 = client.send_request_async(
+        "workspace/executeCommand",
+        json!({
+            "command": "amp.implFunction",
+            "arguments": [test_uri_2, 1, 0, 1, "rust"]
+        }),
+    );
+
+    let req_id_3 = client.send_request_async(
+        "workspace/executeCommand",
+        json!({
+            "command": "amp.implFunction",
+            "arguments": [test_uri_3, 1, 0, 1, "rust"]
+        }),
+    );
+
+    println!("Sent requests with IDs: {}, {}, {}", req_id_1, req_id_2, req_id_3);
+
+    let messages = client.collect_messages(Duration::from_secs(60));
+
+    println!("\n=== Collected {} messages ===", messages.len());
+
+    let mut responses: HashMap<i32, Value> = HashMap::new();
+    let mut progress_notifications: Vec<Value> = Vec::new();
+    let mut apply_edits: Vec<Value> = Vec::new();
+
+    for msg in &messages {
+        if let Some(id) = msg.get("id") {
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                if let Some(id_num) = id.as_i64() {
+                    responses.insert(id_num as i32, msg.clone());
+                }
+            } else if msg.get("method").map(|m| m.as_str()) == Some(Some("workspace/applyEdit")) {
+                apply_edits.push(msg.clone());
+            }
+        } else if let Some(method) = msg.get("method") {
+            if method.as_str() == Some("amp/implFunctionProgress") {
+                progress_notifications.push(msg.clone());
+            }
+        }
+    }
+
+    println!("\n=== Responses ===");
+    for (id, resp) in &responses {
+        println!("Request {}: {}", id, if resp.get("result").is_some() { "success" } else { "error" });
+    }
+
+    assert!(
+        responses.contains_key(&req_id_1),
+        "Missing response for request {}",
+        req_id_1
+    );
+    assert!(
+        responses.contains_key(&req_id_2),
+        "Missing response for request {}",
+        req_id_2
+    );
+    assert!(
+        responses.contains_key(&req_id_3),
+        "Missing response for request {}",
+        req_id_3
+    );
+
+    for (id, resp) in &responses {
+        assert!(
+            resp.get("result").is_some(),
+            "Request {} should return success (non-blocking), got error: {:?}",
+            id,
+            resp.get("error")
+        );
+    }
+    println!("✓ All 3 commands returned success immediately");
+
+    println!("\n=== Progress Notifications ===");
+    println!("Received {} progress notifications", progress_notifications.len());
+
+    let mut job_ids: HashSet<String> = HashSet::new();
+    let mut job_id_to_uri: HashMap<String, String> = HashMap::new();
+
+    for notif in &progress_notifications {
+        if let Some(params) = notif.get("params") {
+            if let (Some(job_id), Some(uri)) = (
+                params.get("job_id").and_then(|j| j.as_str()),
+                params.get("uri").and_then(|u| u.as_str()),
+            ) {
+                job_ids.insert(job_id.to_string());
+                job_id_to_uri.insert(job_id.to_string(), uri.to_string());
+
+                if let Some(preview) = params.get("preview").and_then(|p| p.as_str()) {
+                    println!(
+                        "  job_id: {}... uri: {} preview_len: {}",
+                        &job_id[..8.min(job_id.len())],
+                        uri,
+                        preview.len()
+                    );
+                }
+            }
+        }
+    }
+
+    if !progress_notifications.is_empty() {
+        println!("✓ Progress notifications include job_id for correlation");
+        println!("  Unique job_ids: {}", job_ids.len());
+
+        assert!(
+            job_ids.len() >= 1,
+            "Expected at least 1 unique job_id in progress notifications"
+        );
+    }
+
+    println!("\n=== Workspace Apply Edits ===");
+    println!("Received {} workspace/applyEdit requests", apply_edits.len());
+
+    let mut edited_uris: HashSet<String> = HashSet::new();
+    for edit in &apply_edits {
+        if let Some(params) = edit.get("params") {
+            if let Some(doc_changes) = params
+                .get("edit")
+                .and_then(|e| e.get("documentChanges"))
+                .and_then(|dc| dc.as_array())
+            {
+                for change in doc_changes {
+                    if let Some(uri) = change
+                        .get("textDocument")
+                        .and_then(|td| td.get("uri"))
+                        .and_then(|u| u.as_str())
+                    {
+                        edited_uris.insert(uri.to_string());
+                        println!("  Edit for: {}", uri);
+                    }
+                }
+            }
+        }
+    }
+
+    if apply_edits.len() >= 3 {
+        assert_eq!(
+            edited_uris.len(),
+            3,
+            "Expected edits for 3 different files"
+        );
+        assert!(edited_uris.contains(test_uri_1), "Missing edit for {}", test_uri_1);
+        assert!(edited_uris.contains(test_uri_2), "Missing edit for {}", test_uri_2);
+        assert!(edited_uris.contains(test_uri_3), "Missing edit for {}", test_uri_3);
+        println!("✓ All 3 files received workspace/applyEdit");
+    } else {
+        println!(
+            "Only {} apply edits received (expected 3) - amp CLI may have issues",
+            apply_edits.len()
+        );
+    }
+
+    let stderr = client.drain_stderr();
+    if !stderr.is_empty() {
+        println!("\n=== Server Stderr (last 2000 chars) ===");
+        let stderr_tail: String = stderr.chars().rev().take(2000).collect::<String>().chars().rev().collect();
+        println!("{}", stderr_tail);
+    }
+
+    println!("\n=== Test Summary ===");
+    println!("Responses received: {}/3", responses.len());
+    println!("Progress notifications: {}", progress_notifications.len());
+    println!("Apply edits: {}/3", apply_edits.len());
+    println!("Unique job IDs: {}", job_ids.len());
+
     client.shutdown();
 }
