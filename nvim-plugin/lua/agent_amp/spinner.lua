@@ -5,12 +5,12 @@ local FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 local INTERVAL_MS = 80
 local TIMEOUT_MS = 40000
 
-function Spinner.new()
+function Spinner.new(ns_id)
     local self = setmetatable({}, Spinner)
     self.timer = nil
     self.bufnr = nil
     self.line = nil
-    self.ns_id = vim.api.nvim_create_namespace("agent_amp_spinner")
+    self.ns_id = ns_id
     self.frame_idx = 1
     self.extmark_id = nil
     self.timeout_timer = nil
@@ -50,8 +50,8 @@ function Spinner:stop()
         self.timeout_timer = nil
     end
 
-    if self.bufnr and vim.api.nvim_buf_is_valid(self.bufnr) then
-        vim.api.nvim_buf_clear_namespace(self.bufnr, self.ns_id, 0, -1)
+    if self.bufnr and self.extmark_id and vim.api.nvim_buf_is_valid(self.bufnr) then
+        pcall(vim.api.nvim_buf_del_extmark, self.bufnr, self.ns_id, self.extmark_id)
     end
 
     self.bufnr = nil
@@ -84,7 +84,9 @@ function Spinner:_update()
         return
     end
 
-    vim.api.nvim_buf_clear_namespace(self.bufnr, self.ns_id, 0, -1)
+    if self.extmark_id then
+        pcall(vim.api.nvim_buf_del_extmark, self.bufnr, self.ns_id, self.extmark_id)
+    end
 
     local frame = FRAMES[self.frame_idx]
     local extmark_opts = {
@@ -105,4 +107,75 @@ function Spinner:_update()
     self.frame_idx = (self.frame_idx % #FRAMES) + 1
 end
 
-return Spinner
+local SpinnerManager = {}
+SpinnerManager.__index = SpinnerManager
+
+function SpinnerManager.new()
+    local self = setmetatable({}, SpinnerManager)
+    self.ns_id = vim.api.nvim_create_namespace("agent_amp_spinner")
+    self.spinners = {}
+    return self
+end
+
+function SpinnerManager:start(job_id, bufnr, line)
+    if self.spinners[job_id] then
+        self.spinners[job_id]:stop()
+    end
+
+    local spinner = Spinner.new(self.ns_id)
+    spinner:start(bufnr, line)
+    self.spinners[job_id] = spinner
+end
+
+function SpinnerManager:stop(job_id)
+    local spinner = self.spinners[job_id]
+    if spinner then
+        spinner:stop()
+        self.spinners[job_id] = nil
+    end
+end
+
+function SpinnerManager:stop_all()
+    for job_id, spinner in pairs(self.spinners) do
+        spinner:stop()
+        self.spinners[job_id] = nil
+    end
+end
+
+function SpinnerManager:is_running(job_id)
+    local spinner = self.spinners[job_id]
+    return spinner and spinner:is_running()
+end
+
+function SpinnerManager:has_running()
+    for _, spinner in pairs(self.spinners) do
+        if spinner:is_running() then
+            return true
+        end
+    end
+    return false
+end
+
+function SpinnerManager:set_preview(job_id, text)
+    local spinner = self.spinners[job_id]
+    if spinner and spinner:is_running() then
+        spinner:set_preview(text)
+    end
+end
+
+function SpinnerManager:find_job_by_uri_line(uri, line)
+    for job_id, spinner in pairs(self.spinners) do
+        if spinner:is_running() and spinner.line == line then
+            local bufnr = spinner.bufnr
+            if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+                local buf_uri = vim.uri_from_bufnr(bufnr)
+                if buf_uri == uri then
+                    return job_id
+                end
+            end
+        end
+    end
+    return nil
+end
+
+return SpinnerManager
