@@ -1,6 +1,8 @@
 use std::error::Error;
+use std::thread;
 
-use lsp_server::{Connection, Notification, Request};
+use crossbeam_channel::Sender;
+use lsp_server::{Connection, Message, Notification, Request};
 use lsp_types::request::CodeActionRequest;
 use lsp_types::{
     notification::DidChangeTextDocument, notification::DidOpenTextDocument,
@@ -12,6 +14,7 @@ use lsp_types::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tracing::{error, info};
+use uuid::Uuid;
 
 use crate::amp::AmpClient;
 use crate::document_store::DocumentStore;
@@ -22,6 +25,7 @@ pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "amp/implFunctionProgress"
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImplFunctionProgressParams {
+    pub job_id: String,
     pub uri: String,
     pub line: u32,
     pub preview: String,
@@ -30,19 +34,13 @@ pub struct ImplFunctionProgressParams {
 pub struct RequestHandler<'a> {
     connection: &'a Connection,
     document_store: &'a DocumentStore,
-    amp_client: &'a AmpClient,
 }
 
 impl<'a> RequestHandler<'a> {
-    pub fn new(
-        connection: &'a Connection,
-        document_store: &'a DocumentStore,
-        amp_client: &'a AmpClient,
-    ) -> Self {
+    pub fn new(connection: &'a Connection, document_store: &'a DocumentStore) -> Self {
         Self {
             connection,
             document_store,
-            amp_client,
         }
     }
 
@@ -154,23 +152,62 @@ impl<'a> RequestHandler<'a> {
             );
         }
 
-        lsp_client.send_success(req, serde_json::Value::Null)?;
-
         let file_path = uri
             .to_file_path()
             .map_err(|_| "Invalid file URI")?
             .to_string_lossy()
             .to_string();
 
+        let job_id = Uuid::new_v4().to_string();
+        let sender = self.connection.sender.clone();
+        let doc_text = doc.text.clone();
+        let doc_version = doc.version;
+        let uri_clone = uri.clone();
+
+        lsp_client.send_success(req, serde_json::Value::Null)?;
+
+        spawn_implementation_worker(
+            job_id,
+            sender,
+            uri_clone,
+            file_path,
+            line,
+            character,
+            language_id,
+            doc_text,
+            doc_version,
+        );
+
+        Ok(())
+    }
+}
+
+fn spawn_implementation_worker(
+    job_id: String,
+    sender: Sender<Message>,
+    uri: Url,
+    file_path: String,
+    line: u32,
+    character: u32,
+    language_id: String,
+    doc_text: String,
+    doc_version: i32,
+) {
+    thread::spawn(move || {
+        let lsp_client = LspClient::new_from_sender(sender);
+        let amp_client = AmpClient::new();
         let uri_str = uri.to_string();
-        match self.amp_client.implement_function_streaming(
+        let job_id_clone = job_id.clone();
+
+        match amp_client.implement_function_streaming(
             &file_path,
             line,
             character,
             &language_id,
-            &doc.text,
+            &doc_text,
             |preview| {
                 let params = ImplFunctionProgressParams {
+                    job_id: job_id_clone.clone(),
                     uri: uri_str.clone(),
                     line,
                     preview: preview.to_string(),
@@ -185,20 +222,20 @@ impl<'a> RequestHandler<'a> {
             Ok(implementation) => {
                 let edit = WorkspaceEditBuilder::create_line_insert(
                     &uri,
-                    &doc.text,
+                    &doc_text,
                     line,
                     &implementation,
-                    doc.version,
+                    doc_version,
                 );
-                lsp_client.send_apply_edit(edit)?;
+                if let Err(e) = lsp_client.send_apply_edit(edit) {
+                    error!("Failed to send apply edit: {}", e);
+                }
             }
             Err(e) => {
                 error!("Amp CLI error: {}", e);
             }
         }
-
-        Ok(())
-    }
+    });
 }
 
 pub struct NotificationHandler<'a> {

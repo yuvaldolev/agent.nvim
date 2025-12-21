@@ -3,6 +3,11 @@ mod document_store;
 mod handlers;
 mod lsp_utils;
 
+#[allow(dead_code)]
+fn _ensure_amp_module_compiled() {
+    let _ = amp::AmpClient::new();
+}
+
 use std::error::Error;
 
 use lsp_server::{Connection, Message};
@@ -14,14 +19,12 @@ use lsp_types::{
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-use crate::amp::AmpClient;
 use crate::document_store::DocumentStore;
 use crate::handlers::{NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION};
 
 struct Server {
     connection: Connection,
     document_store: DocumentStore,
-    amp_client: AmpClient,
 }
 
 impl Server {
@@ -29,7 +32,6 @@ impl Server {
         Self {
             connection,
             document_store: DocumentStore::new(),
-            amp_client: AmpClient::new(),
         }
     }
 
@@ -71,8 +73,7 @@ impl Server {
                     if self.connection.handle_shutdown(&req)? {
                         break;
                     }
-                    let handler =
-                        RequestHandler::new(&self.connection, &self.document_store, &self.amp_client);
+                    let handler = RequestHandler::new(&self.connection, &self.document_store);
                     handler.handle(&req)?;
                 }
                 Message::Notification(notification) => {
