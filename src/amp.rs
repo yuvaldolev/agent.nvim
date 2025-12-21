@@ -12,6 +12,21 @@ struct AmpResult {
     is_error: Option<bool>,
 }
 
+fn strip_markdown_code_block(s: &str) -> String {
+    let trimmed = s.trim();
+    
+    // Check if wrapped in markdown code block
+    if trimmed.starts_with("```") && trimmed.ends_with("```") {
+        let lines: Vec<&str> = trimmed.lines().collect();
+        if lines.len() >= 2 {
+            // Skip first line (```lang) and last line (```)
+            return lines[1..lines.len() - 1].join("\n");
+        }
+    }
+    
+    s.to_string()
+}
+
 pub struct AmpClient;
 
 impl AmpClient {
@@ -33,8 +48,12 @@ impl AmpClient {
         );
 
         let prompt = format!(
-            "Implement the function at line {}, character {} in the following {} file. \
-             Output ONLY the implementation code, no explanations or markdown:\n\n{}",
+            "Implement the function body at line {}, character {} in the following {} file. \
+             Output ONLY the raw code for the function body (the code that goes between the curly braces). \
+             Do NOT include the function signature/declaration. \
+             Do NOT wrap the output in markdown code blocks. \
+             Do NOT include any explanations. \
+             Just output the raw implementation code:\n\n{}",
             line + 1,
             character + 1,
             language_id,
@@ -68,6 +87,7 @@ impl AmpClient {
                         .into());
                     }
                     let result = msg.result.unwrap_or_default();
+                    let result = strip_markdown_code_block(&result);
                     info!("Amp CLI returned {} bytes", result.len());
                     return Ok(result.trim().to_string());
                 }
