@@ -4,11 +4,6 @@ mod handlers;
 mod job_queue;
 mod lsp_utils;
 
-#[allow(dead_code)]
-fn _ensure_amp_module_compiled() {
-    let _ = amp::AmpClient::new();
-}
-
 use std::error::Error;
 use std::sync::Arc;
 

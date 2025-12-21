@@ -53,16 +53,10 @@ impl LspClient {
         stdin.flush().unwrap();
     }
 
-    fn read_message_from_reader(reader: &mut BufReader<&mut ChildStdout>) -> Value {
-        let mut header = String::new();
-        loop {
-            header.clear();
-            reader.read_line(&mut header).unwrap();
-            if header.starts_with("Content-Length:") {
-                break;
-            }
-        }
-
+    fn read_message_body_from_reader(
+        reader: &mut BufReader<&mut ChildStdout>,
+        header: &str,
+    ) -> Value {
         let content_length: usize = header
             .trim()
             .strip_prefix("Content-Length:")
@@ -78,6 +72,19 @@ impl LspClient {
         reader.read_exact(&mut content).unwrap();
 
         serde_json::from_slice(&content).unwrap()
+    }
+
+    fn read_message_from_reader(reader: &mut BufReader<&mut ChildStdout>) -> Value {
+        let mut header = String::new();
+        loop {
+            header.clear();
+            reader.read_line(&mut header).unwrap();
+            if header.starts_with("Content-Length:") {
+                break;
+            }
+        }
+
+        Self::read_message_body_from_reader(reader, &header)
     }
 
     fn read_message(&mut self) -> Value {
@@ -121,21 +128,7 @@ impl LspClient {
 
         set_nonblocking(self.stdout_fd, false);
 
-        let content_length: usize = header
-            .trim()
-            .strip_prefix("Content-Length:")
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-
-        let mut empty_line = String::new();
-        reader.read_line(&mut empty_line).unwrap();
-
-        let mut content = vec![0u8; content_length];
-        reader.read_exact(&mut content).unwrap();
-
-        Some(serde_json::from_slice(&content).unwrap())
+        Some(Self::read_message_body_from_reader(&mut reader, &header))
     }
 
     fn send_request(&mut self, method: &str, params: Value) -> Value {
@@ -192,21 +185,7 @@ impl LspClient {
 
             set_nonblocking(self.stdout_fd, false);
 
-            let content_length: usize = header
-                .trim()
-                .strip_prefix("Content-Length:")
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-
-            let mut empty_line = String::new();
-            reader.read_line(&mut empty_line).unwrap();
-
-            let mut content = vec![0u8; content_length];
-            reader.read_exact(&mut content).unwrap();
-
-            let msg: Value = serde_json::from_slice(&content).unwrap();
+            let msg = Self::read_message_body_from_reader(&mut reader, &header);
             messages.push(msg);
 
             set_nonblocking(self.stdout_fd, true);

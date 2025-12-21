@@ -3,19 +3,19 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use lsp_types::Url;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct PendingJob {
     job_id: String,
     line: u32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct ActiveJob {
     job_id: String,
     line: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct FileQueue {
     active_job: Option<ActiveJob>,
     pending: Vec<PendingJob>,
