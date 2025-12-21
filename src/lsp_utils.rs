@@ -128,7 +128,6 @@ impl WorkspaceEditBuilder {
         current_text: &str,
         line: u32,
         implementation: &str,
-        version: i32,
     ) -> WorkspaceEdit {
         let line_start = Position { line, character: 0 };
         let line_end = Position {
@@ -152,7 +151,7 @@ impl WorkspaceEditBuilder {
             document_changes: Some(lsp_types::DocumentChanges::Edits(vec![TextDocumentEdit {
                 text_document: OptionalVersionedTextDocumentIdentifier {
                     uri: uri.clone(),
-                    version: Some(version),
+                    version: None,
                 },
                 edits: vec![lsp_types::OneOf::Left(edit)],
             }])),
