@@ -49,23 +49,15 @@ function LspClient:_resolve_cmd()
     return nil
 end
 
-function LspClient:ensure_client(bufnr)
-    if self.client_id and vim.lsp.get_client_by_id(self.client_id) then
-        if not vim.lsp.buf_is_attached(bufnr, self.client_id) then
-            vim.lsp.buf_attach_client(bufnr, self.client_id)
-        end
-        return self.client_id
-    end
-
+function LspClient:_create_client_config()
     local cmd = self:_resolve_cmd()
     if not cmd then
-        vim.notify("[AgentAmp] LSP binary not found. Build with 'cargo build --release' or specify cmd in setup()", vim.log.levels.ERROR)
         return nil
     end
 
     local original_handler = vim.lsp.handlers["workspace/applyEdit"]
 
-    local client_id = vim.lsp.start({
+    return {
         name = "agent-lsp",
         cmd = cmd,
         root_dir = vim.fn.getcwd(),
@@ -85,12 +77,31 @@ function LspClient:ensure_client(bufnr)
                 end
             end,
         },
-    }, {
-        bufnr = bufnr,
-        reuse_client = function(client, config)
-            return client.name == config.name
+    }
+end
+
+function LspClient:start(bufnr)
+    if self.client_id and vim.lsp.get_client_by_id(self.client_id) then
+        return self.client_id
+    end
+
+    local config = self:_create_client_config()
+    if not config then
+        vim.notify("[AgentAmp] LSP binary not found. Build with 'cargo build --release' or specify cmd in setup()", vim.log.levels.WARN)
+        return nil
+    end
+
+    local start_opts = {
+        reuse_client = function(client, cfg)
+            return client.name == cfg.name
         end,
-    })
+    }
+
+    if bufnr then
+        start_opts.bufnr = bufnr
+    end
+
+    local client_id = vim.lsp.start(config, start_opts)
 
     if not client_id then
         vim.notify("[AgentAmp] Failed to start LSP client", vim.log.levels.ERROR)
@@ -99,6 +110,35 @@ function LspClient:ensure_client(bufnr)
 
     self.client_id = client_id
     return client_id
+end
+
+function LspClient:attach_buffer(bufnr)
+    if not self.client_id then
+        return self:start(bufnr)
+    end
+
+    local client = vim.lsp.get_client_by_id(self.client_id)
+    if not client then
+        self.client_id = nil
+        return self:start(bufnr)
+    end
+
+    if not vim.lsp.buf_is_attached(bufnr, self.client_id) then
+        vim.lsp.buf_attach_client(bufnr, self.client_id)
+    end
+
+    return self.client_id
+end
+
+function LspClient:ensure_client(bufnr)
+    if self.client_id and vim.lsp.get_client_by_id(self.client_id) then
+        if not vim.lsp.buf_is_attached(bufnr, self.client_id) then
+            vim.lsp.buf_attach_client(bufnr, self.client_id)
+        end
+        return self.client_id
+    end
+
+    return self:start(bufnr)
 end
 
 function LspClient:request_code_actions(bufnr, callback)
