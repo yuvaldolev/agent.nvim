@@ -32,6 +32,7 @@ function LspClient.new(opts)
     self.user_cmd = opts.cmd
     self.client_id = nil
     self.on_apply_edit = opts.on_apply_edit
+    self.on_progress = opts.on_progress
     return self
 end
 
@@ -77,6 +78,11 @@ function LspClient:ensure_client(bufnr)
                     return original_handler(err, result, ctx, config)
                 end
                 return { applied = true }
+            end,
+            ["amp/implFunctionProgress"] = function(_err, params, _ctx)
+                if self.on_progress then
+                    self.on_progress(params)
+                end
             end,
         },
     }, {

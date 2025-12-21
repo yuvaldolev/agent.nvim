@@ -14,6 +14,7 @@ function Spinner.new()
     self.frame_idx = 1
     self.extmark_id = nil
     self.timeout_timer = nil
+    self.preview_lines = nil
     return self
 end
 
@@ -56,10 +57,19 @@ function Spinner:stop()
     self.bufnr = nil
     self.line = nil
     self.extmark_id = nil
+    self.preview_lines = nil
 end
 
 function Spinner:is_running()
     return self.timer ~= nil
+end
+
+function Spinner:set_preview(text)
+    if not text or text == "" then
+        self.preview_lines = nil
+        return
+    end
+    self.preview_lines = vim.split(text, "\n", { plain = true })
 end
 
 function Spinner:_update()
@@ -77,10 +87,20 @@ function Spinner:_update()
     vim.api.nvim_buf_clear_namespace(self.bufnr, self.ns_id, 0, -1)
 
     local frame = FRAMES[self.frame_idx]
-    self.extmark_id = vim.api.nvim_buf_set_extmark(self.bufnr, self.ns_id, self.line, 0, {
+    local extmark_opts = {
         virt_text = { { " " .. frame .. " Implementing with Amp...", "Comment" } },
         virt_text_pos = "eol",
-    })
+    }
+
+    if self.preview_lines and #self.preview_lines > 0 then
+        local virt_lines = {}
+        for _, line in ipairs(self.preview_lines) do
+            table.insert(virt_lines, { { line, "Comment" } })
+        end
+        extmark_opts.virt_lines = virt_lines
+    end
+
+    self.extmark_id = vim.api.nvim_buf_set_extmark(self.bufnr, self.ns_id, self.line, 0, extmark_opts)
 
     self.frame_idx = (self.frame_idx % #FRAMES) + 1
 end

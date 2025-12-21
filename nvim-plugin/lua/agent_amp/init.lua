@@ -15,6 +15,9 @@ function AgentAmp.new(opts)
         on_apply_edit = function(err, result, ctx)
             self:_on_apply_edit(err, result, ctx)
         end,
+        on_progress = function(params)
+            self:_on_progress(params)
+        end,
     })
     return self
 end
@@ -23,6 +26,12 @@ function AgentAmp:_on_apply_edit(_err, _result, _ctx)
     if self.spinner:is_running() then
         self.spinner:stop()
         vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
+    end
+end
+
+function AgentAmp:_on_progress(params)
+    if self.spinner:is_running() and params and params.preview then
+        self.spinner:set_preview(params.preview)
     end
 end
 
