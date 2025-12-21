@@ -12,6 +12,7 @@ agent.nvim provides a seamless integration between Neovim and the Amp AI coding 
 ## Features
 
 - **`:AmpImplementFunction`** — Implement the function at the cursor position using AI
+- **Streaming progress** — See incremental AI output as ghost text while the implementation is being generated
 - Animated spinner feedback while waiting for AI response
 - Automatic code insertion via LSP workspace edits
 - Language-agnostic design (works with any programming language)
@@ -130,7 +131,12 @@ sequenceDiagram
     Plugin->>Plugin: Start spinner
     Plugin->>LSP: workspace/executeCommand
     LSP->>Amp: amp --execute "..." --stream-json
-    Amp-->>LSP: Implementation code
+    loop Streaming
+        Amp-->>LSP: Partial implementation
+        LSP->>Plugin: amp/implFunctionProgress
+        Plugin->>Plugin: Update ghost text preview
+    end
+    Amp-->>LSP: Final result
     LSP->>Plugin: workspace/applyEdit
     Plugin->>Plugin: Stop spinner
     Plugin->>Neovim: Apply text edits
@@ -168,6 +174,7 @@ src/
 | `textDocument/completion` | Stub (returns null) |
 | `textDocument/codeAction` | Returns "Implement function with Amp" action |
 | `workspace/executeCommand` | Handles `amp.implFunction`, calls Amp CLI |
+| `amp/implFunctionProgress` | Server-to-client notification with streaming preview text |
 
 #### Neovim Plugin (`nvim-plugin/`)
 
@@ -187,9 +194,9 @@ nvim-plugin/
 
 | Module | Description |
 |--------|-------------|
-| `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AmpImplementFunction` command |
-| `lsp.lua` | `LspClient` class. Manages LSP lifecycle, automatic binary resolution, handles `workspace/applyEdit` responses |
-| `spinner.lua` | `Spinner` class. Shows animated progress indicator with 40s timeout |
+| `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AmpImplementFunction` command, handles progress callbacks |
+| `lsp.lua` | `LspClient` class. Manages LSP lifecycle, automatic binary resolution, handles `workspace/applyEdit` and `amp/implFunctionProgress` notifications |
+| `spinner.lua` | `Spinner` class. Shows animated progress indicator with 40s timeout and ghost text preview support |
 
 **Binary Resolution (`lsp.lua`):**
 
@@ -245,7 +252,9 @@ The prompt includes:
 - Language ID
 - Full file contents
 
-The response is parsed as JSON, extracting the `result` field from the last `type: "result"` message.
+The CLI output is processed as a stream of JSON messages:
+- **`type: "assistant"`** messages contain incremental text, which is sent to the client via `amp/implFunctionProgress` notifications for real-time ghost text preview
+- **`type: "result"`** messages contain the final implementation, which triggers a `workspace/applyEdit` request
 
 ## Development
 

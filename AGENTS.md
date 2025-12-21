@@ -52,7 +52,7 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - **main.rs**: `Server` struct with `initialize()` and `run()` methods, message dispatch loop
 - **handlers.rs**: `RequestHandler` and `NotificationHandler` for LSP message dispatch
 - **document_store.rs**: `DocumentStore` with `Arc<Mutex<HashMap<Url, Document>>>` for tracking open files
-- **amp.rs**: `AmpClient` that shells out to `amp` CLI
+- **amp.rs**: `AmpClient` with `implement_function_streaming()` that reads `amp` CLI stdout line-by-line and calls progress callback
 - **lsp_utils.rs**: `LspClient` (response helpers) and `WorkspaceEditBuilder` (workspace edits)
 
 ### LSP Capabilities
@@ -60,7 +60,8 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - `textDocument/didOpen`, `textDocument/didChange`: INCREMENTAL sync to DocumentStore
 - `textDocument/completion`: Stub (returns null)
 - `textDocument/codeAction`: Returns "Implement function with Amp" command
-- `workspace/executeCommand`: Handles `amp.implFunction`, calls Amp CLI, sends `workspace/applyEdit`
+- `workspace/executeCommand`: Handles `amp.implFunction`, calls Amp CLI with streaming, sends `workspace/applyEdit`
+- `amp/implFunctionProgress`: Server-to-client notification with streaming preview text (params: `uri`, `line`, `preview`)
 
 ## Design Decisions
 
