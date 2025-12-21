@@ -82,6 +82,32 @@ function M.setup(opts)
     vim.api.nvim_create_user_command("AmpImplementFunction", function()
         M.implement_function()
     end, { desc = "Implement function with Amp AI" })
+
+    -- Create augroup for AgentAmp autocmds
+    local augroup = vim.api.nvim_create_augroup("AgentAmp", { clear = true })
+
+    -- Start the LSP and attach to current buffer (deferred to allow Neovim to fully initialize)
+    vim.schedule(function()
+        local bufnr = vim.api.nvim_get_current_buf()
+        if vim.api.nvim_buf_is_valid(bufnr) and vim.bo[bufnr].buftype == "" then
+            instance.lsp_client:start(bufnr)
+        else
+            -- Start without a buffer if current buffer is not a normal file buffer
+            instance.lsp_client:start()
+        end
+    end)
+
+    -- Attach LSP to newly opened buffers
+    vim.api.nvim_create_autocmd("BufEnter", {
+        group = augroup,
+        callback = function(args)
+            -- Only attach to normal file buffers (not special buffers like terminals, quickfix, etc.)
+            if vim.bo[args.buf].buftype == "" then
+                instance.lsp_client:attach_buffer(args.buf)
+            end
+        end,
+        desc = "Attach AgentAmp LSP to buffer",
+    })
 end
 
 function M.implement_function()
