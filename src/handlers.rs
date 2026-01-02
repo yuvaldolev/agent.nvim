@@ -17,7 +17,7 @@ use serde_json::json;
 use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::amp::AmpClient;
+use crate::backend::create_backend;
 use crate::document_store::DocumentStore;
 use crate::job_queue::JobQueue;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
@@ -195,9 +195,7 @@ fn spawn_implementation_worker(
 ) {
     thread::spawn(move || {
         let lsp_client = LspClient::new_from_sender(sender);
-        let amp_client = AmpClient::new();
-        let uri_str = uri.to_string();
-        let job_id_clone = job_id.clone();
+        let backend = create_backend();
 
         // Acquire the slot for this file (blocks if another job is active)
         // Returns the adjusted line number (may differ from original if previous edits shifted lines)
@@ -219,25 +217,32 @@ fn spawn_implementation_worker(
         };
         let doc_text = doc.text.clone();
 
-        match amp_client.implement_function_streaming(
+        // Clone values for the progress callback closure
+        let progress_job_id = job_id.clone();
+        let progress_uri = uri.to_string();
+        let progress_line = line;
+        let progress_sender = lsp_client.clone_sender();
+
+        match backend.implement_function_streaming(
             &file_path,
             line,
             character,
             &language_id,
             &doc_text,
-            |preview| {
+            Box::new(move |preview| {
                 let params = ImplFunctionProgressParams {
-                    job_id: job_id_clone.clone(),
-                    uri: uri_str.clone(),
-                    line,
+                    job_id: progress_job_id.clone(),
+                    uri: progress_uri.clone(),
+                    line: progress_line,
                     preview: preview.to_string(),
                 };
+                let progress_client = LspClient::new_from_sender(progress_sender.clone());
                 if let Err(e) =
-                    lsp_client.send_notification(NOTIFICATION_IMPL_FUNCTION_PROGRESS, params)
+                    progress_client.send_notification(NOTIFICATION_IMPL_FUNCTION_PROGRESS, params)
                 {
                     error!("Failed to send progress notification: {}", e);
                 }
-            },
+            }),
         ) {
             Ok(implementation) => {
                 // Calculate how many lines the implementation adds
@@ -261,7 +266,7 @@ fn spawn_implementation_worker(
                 );
             }
             Err(e) => {
-                error!("Amp CLI error: {}", e);
+                error!("Backend error: {}", e);
             }
         }
 

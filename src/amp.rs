@@ -5,6 +5,9 @@ use std::process::{Command, Stdio};
 use serde::Deserialize;
 use tracing::info;
 
+use crate::backend::Backend;
+use crate::utils::strip_markdown_code_block;
+
 #[derive(Debug, Deserialize)]
 struct AmpMessage {
     #[serde(rename = "type")]
@@ -38,19 +41,20 @@ enum ContentBlock {
     },
 }
 
-fn strip_markdown_code_block(s: &str) -> String {
-    let trimmed = s.trim();
-
-    // Check if wrapped in markdown code block
-    if trimmed.starts_with("```") && trimmed.ends_with("```") {
-        let lines: Vec<&str> = trimmed.lines().collect();
-        if lines.len() >= 2 {
-            // Skip first line (```lang) and last line (```)
-            return lines[1..lines.len() - 1].join("\n");
-        }
-    }
-
-    s.to_string()
+/// Build the prompt for function implementation.
+fn build_prompt(line: u32, character: u32, language_id: &str, file_contents: &str) -> String {
+    format!(
+        "Implement the function body at line {}, character {} in the following {} file. \
+         Output ONLY the raw code for the function body (the code that goes between the curly braces). \
+         Do NOT include the function signature/declaration. \
+         Do NOT wrap the output in markdown code blocks. \
+         Do NOT include any explanations. \
+         Just output the raw implementation code:\n\n{}",
+        line + 1,
+        character + 1,
+        language_id,
+        file_contents
+    )
 }
 
 pub struct AmpClient;
@@ -59,8 +63,16 @@ impl AmpClient {
     pub fn new() -> Self {
         Self
     }
+}
 
-    pub fn implement_function(
+impl Default for AmpClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Backend for AmpClient {
+    fn implement_function(
         &self,
         file_path: &str,
         line: u32,
@@ -73,18 +85,7 @@ impl AmpClient {
             file_path, line, character, language_id
         );
 
-        let prompt = format!(
-            "Implement the function body at line {}, character {} in the following {} file. \
-             Output ONLY the raw code for the function body (the code that goes between the curly braces). \
-             Do NOT include the function signature/declaration. \
-             Do NOT wrap the output in markdown code blocks. \
-             Do NOT include any explanations. \
-             Just output the raw implementation code:\n\n{}",
-            line + 1,
-            character + 1,
-            language_id,
-            file_contents
-        );
+        let prompt = build_prompt(line, character, language_id, file_contents);
 
         let output = Command::new("amp")
             .arg("--execute")
@@ -123,35 +124,21 @@ impl AmpClient {
         Err("No result found in amp output".into())
     }
 
-    pub fn implement_function_streaming<F>(
+    fn implement_function_streaming(
         &self,
         file_path: &str,
         line: u32,
         character: u32,
         language_id: &str,
         file_contents: &str,
-        mut on_progress: F,
-    ) -> Result<String, Box<dyn Error + Sync + Send>>
-    where
-        F: FnMut(&str),
-    {
+        mut on_progress: Box<dyn FnMut(&str) + Send>,
+    ) -> Result<String, Box<dyn Error + Sync + Send>> {
         info!(
             "Calling amp CLI (streaming) - file: {}, line: {}, character: {}, language: {}",
             file_path, line, character, language_id
         );
 
-        let prompt = format!(
-            "Implement the function body at line {}, character {} in the following {} file. \
-             Output ONLY the raw code for the function body (the code that goes between the curly braces). \
-             Do NOT include the function signature/declaration. \
-             Do NOT wrap the output in markdown code blocks. \
-             Do NOT include any explanations. \
-             Just output the raw implementation code:\n\n{}",
-            line + 1,
-            character + 1,
-            language_id,
-            file_contents
-        );
+        let prompt = build_prompt(line, character, language_id, file_contents);
 
         let mut child = Command::new("amp")
             .arg("--execute")
@@ -208,11 +195,5 @@ impl AmpClient {
         }
 
         final_result.ok_or_else(|| "No result found in amp output".into())
-    }
-}
-
-impl Default for AmpClient {
-    fn default() -> Self {
-        Self::new()
     }
 }

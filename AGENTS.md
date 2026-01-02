@@ -1,6 +1,6 @@
 # agent.nvim
 
-An LSP server that integrates Amp AI code generation into any LSP-compatible editor.
+An LSP server that integrates AI code generation into any LSP-compatible editor. Supports multiple AI backends including Amp and OpenCode.
 
 ## Build & Run
 
@@ -30,9 +30,9 @@ cargo test test_initialization    # Run specific test
 - `test_completion_returns_null`: Verifies completion stub returns null
 - `test_unknown_request_returns_error`: Verifies unknown methods return MethodNotFound error
 
-### Ignored Tests (require amp CLI)
+### Ignored Tests (require backend CLI)
 
-These tests are ignored by default because they require the `amp` CLI to be available:
+These tests are ignored by default because they require the configured backend CLI (amp or opencode) to be available:
 
 ```bash
 cargo test --test e2e_test -- --ignored --nocapture  # Run ignored tests with output
@@ -54,8 +54,12 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - **handlers.rs**: `RequestHandler` and `NotificationHandler` for LSP message dispatch
 - **document_store.rs**: `DocumentStore` with `Arc<Mutex<HashMap<Url, Document>>>` for tracking open files
 - **job_queue.rs**: `JobQueue` for per-file serialization of concurrent implementations with automatic line tracking
+- **backend.rs**: `Backend` trait for AI provider abstraction, `create_backend()` factory function
+- **config.rs**: `BackendType` enum and `CURRENT_BACKEND` configuration constant
 - **amp.rs**: `AmpClient` with `implement_function_streaming()` that reads `amp` CLI stdout line-by-line and calls progress callback
+- **opencode.rs**: `OpenCodeClient` with `implement_function_streaming()` that reads `opencode` CLI stdout and calls progress callback
 - **lsp_utils.rs**: `LspClient` (response helpers) and `WorkspaceEditBuilder` (workspace edits)
+- **utils.rs**: Shared utility functions like `strip_markdown_code_block()`
 
 ### LSP Capabilities
 
@@ -65,9 +69,28 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - `workspace/executeCommand`: Handles `amp.implFunction`, calls Amp CLI with streaming, sends `workspace/applyEdit`
 - `amp/implFunctionProgress`: Server-to-client notification with streaming preview text (params: `job_id`, `uri`, `line`, `preview`)
 
+## Backend Selection
+
+The server supports multiple AI backends. To switch backends, edit `src/config.rs`:
+
+```rust
+// Use Amp backend (default)
+pub const CURRENT_BACKEND: BackendType = BackendType::Amp;
+
+// Or use OpenCode backend
+pub const CURRENT_BACKEND: BackendType = BackendType::OpenCode;
+```
+
+After changing the backend, rebuild the server with `cargo build`.
+
+### Backend Requirements
+
+- **Amp**: Requires `amp` CLI to be installed and authenticated
+- **OpenCode**: Requires `opencode` CLI to be installed and authenticated
+
 ## Design Decisions
 
-- **Language agnostic**: Server does NOT parse code. Passes cursor position and file contents to Amp CLI, which determines function context.
+- **Language agnostic**: Server does NOT parse code. Passes cursor position and file contents to AI CLI, which determines function context.
 - **Per-file serialization**: Uses `JobQueue` to serialize concurrent implementations within the same file, preventing race conditions when line numbers shift.
 - **Line tracking**: Pending jobs have their line numbers automatically adjusted when earlier implementations are applied.
 - **Versioned edits**: WorkspaceEdit includes `VersionedTextDocumentIdentifier` for concurrency safety.
