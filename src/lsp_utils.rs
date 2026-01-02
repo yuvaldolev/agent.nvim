@@ -27,6 +27,10 @@ impl LspClient {
         Self { sender }
     }
 
+    pub fn clone_sender(&self) -> Sender<Message> {
+        self.sender.clone()
+    }
+
     pub fn send_response(&self, response: Response) -> Result<(), Box<dyn Error + Sync + Send>> {
         self.sender.send(Message::Response(response))?;
         Ok(())
