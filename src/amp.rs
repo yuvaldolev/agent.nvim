@@ -149,13 +149,9 @@ impl Backend for AmpClient {
         let prompt = build_prompt(line, character, language_id, file_contents, output_path);
 
         let mut child = Command::new("amp")
-            .arg("run")
-            .arg("--format")
-            .arg("json")
-            .arg("--stream")
-            .arg("--model")
-            .arg("amp/claude-3-5-sonnet")
+            .arg("--execute")
             .arg(&prompt)
+            .arg("--stream-json")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
