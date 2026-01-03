@@ -47,7 +47,8 @@ impl DocumentStore {
                 if let Some(range) = change.range {
                     let start_offset = position_to_offset(&doc.text, range.start);
                     let end_offset = position_to_offset(&doc.text, range.end);
-                    doc.text.replace_range(start_offset..end_offset, &change.text);
+                    doc.text
+                        .replace_range(start_offset..end_offset, &change.text);
                 } else {
                     doc.text = change.text.clone();
                 }

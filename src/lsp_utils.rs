@@ -87,10 +87,7 @@ impl LspClient {
         self.send_error(req, lsp_server::ErrorCode::InvalidParams as i32, message)
     }
 
-    pub fn send_apply_edit(
-        &self,
-        edit: WorkspaceEdit,
-    ) -> Result<(), Box<dyn Error + Sync + Send>> {
+    pub fn send_apply_edit(&self, edit: WorkspaceEdit) -> Result<(), Box<dyn Error + Sync + Send>> {
         let params = ApplyWorkspaceEditParams {
             label: Some("Implement function".to_string()),
             edit,
@@ -149,6 +146,35 @@ impl WorkspaceEditBuilder {
                 end: line_end,
             },
             new_text,
+        };
+
+        WorkspaceEdit {
+            document_changes: Some(lsp_types::DocumentChanges::Edits(vec![TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version: None,
+                },
+                edits: vec![lsp_types::OneOf::Left(edit)],
+            }])),
+            ..Default::default()
+        }
+    }
+
+    pub fn create_full_replace(uri: &Url, current_text: &str, new_text: &str) -> WorkspaceEdit {
+        let line_count = current_text.lines().count() as u32;
+        // Ensure we cover the whole file including the last line/newline
+        let start = Position {
+            line: 0,
+            character: 0,
+        };
+        let end = Position {
+            line: line_count + 1, // Go beyond last line to be safe
+            character: 0,
+        };
+
+        let edit = TextEdit {
+            range: Range { start, end },
+            new_text: new_text.to_string(),
         };
 
         WorkspaceEdit {

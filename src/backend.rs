@@ -5,12 +5,12 @@ use crate::config::{BackendType, CURRENT_BACKEND};
 use crate::opencode::OpenCodeClient;
 
 /// Trait for AI backends that can implement functions.
-/// 
+///
 /// This abstraction allows switching between different AI providers
 /// (e.g., Amp, OpenCode) for function implementation.
 pub trait Backend: Send + Sync {
     /// Implement a function at the given location.
-    /// 
+    ///
     /// Returns the function body implementation as a string.
     fn implement_function(
         &self,
@@ -22,9 +22,11 @@ pub trait Backend: Send + Sync {
     ) -> Result<String, Box<dyn Error + Sync + Send>>;
 
     /// Implement a function with streaming progress updates.
-    /// 
-    /// The `on_progress` callback is called with intermediate results
+    ///
+    /// The `on_progress` callback is called with intermediate results/status
     /// as the implementation is being generated.
+    ///
+    /// The final implementation code should be written to `output_path`.
     fn implement_function_streaming(
         &self,
         file_path: &str,
@@ -32,8 +34,9 @@ pub trait Backend: Send + Sync {
         character: u32,
         language_id: &str,
         file_contents: &str,
+        output_path: &str,
         on_progress: Box<dyn FnMut(&str) + Send>,
-    ) -> Result<String, Box<dyn Error + Sync + Send>>;
+    ) -> Result<(), Box<dyn Error + Sync + Send>>;
 }
 
 /// Create a backend instance based on the current configuration.
@@ -56,7 +59,7 @@ mod tests {
         // This test verifies that create_backend() returns a valid backend
         // The actual type depends on CURRENT_BACKEND configuration
         let backend = create_backend();
-        
+
         // We can't easily test the exact type, but we can verify it's valid
         // by checking that the trait object was created successfully
         let _ = backend;

@@ -63,7 +63,10 @@ impl Server {
         let server_capabilities = serde_json::to_value(capabilities)?;
         let initialization_params = self.connection.initialize(server_capabilities)?;
 
-        info!("Server initialized with params: {:?}", initialization_params);
+        info!(
+            "Server initialized with params: {:?}",
+            initialization_params
+        );
 
         Ok(initialization_params)
     }
