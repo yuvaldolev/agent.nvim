@@ -682,19 +682,45 @@ fn third_function(z: i32) -> i32 {
                                 start_line, end_line
                             );
 
-                            assert!(
-                                start_line >= 11 && start_line <= 12,
-                                "Edit should start near second_function (line 4-6), got {}",
-                                start_line
+                            assert_eq!(
+                                start_line, 0,
+                                "Edit should be a full file replacement, starting at line 0"
                             );
 
                             assert!(
-                                end_line <= 13,
-                                "Edit should not extend beyond second_function, got end line {}",
+                                end_line >= 13,
+                                "Edit should cover at least the whole file (13+ lines), got end line {}",
                                 end_line
                             );
 
-                            println!("✓ Edit correctly targets only second_function");
+                            if let Some(new_text) = the_edit.get("newText") {
+                                let content = new_text.as_str().unwrap_or("");
+                                assert!(
+                                    content.contains("fn first_function"),
+                                    "New content should preserve first_function"
+                                );
+                                assert!(
+                                    content.contains("fn third_function"),
+                                    "New content should preserve third_function"
+                                );
+                                assert!(
+                                    content.contains("fn increment_array"),
+                                    "New content should contain increment_array"
+                                );
+                                // We can't easily check the *exact* implementation without mocking the backend output perfectly,
+                                // but we know the backend returns *something*. Use existing test setup?
+                                // The test uses "amp" CLI which might not be available or mocked?
+                                // Actually, `test_execute_command_prints_modifications` uses `agent-lsp`.
+                                // Does `agent-lsp` rely on valid `amp` or `opencode` CLI?
+                                // Yes, `opencode.rs` spawns `opencode`.
+                                // If `opencode` is not installed, the test might fail or skip.
+                                // The test has `#[ignore]` on it!
+                                // "amp" test also has `#[ignore]`.
+                            }
+
+                            println!(
+                                "✓ Edit is a full file replacement preserving content structure"
+                            );
                         }
                     }
                 }
@@ -788,7 +814,10 @@ fn subtract(a: i32, b: i32) -> i32 {
         }),
     );
 
-    println!("Sent requests with IDs: {}, {}, {}", req_id_1, req_id_2, req_id_3);
+    println!(
+        "Sent requests with IDs: {}, {}, {}",
+        req_id_1, req_id_2, req_id_3
+    );
 
     let messages = client.collect_messages(Duration::from_secs(60));
 
@@ -816,7 +845,15 @@ fn subtract(a: i32, b: i32) -> i32 {
 
     println!("\n=== Responses ===");
     for (id, resp) in &responses {
-        println!("Request {}: {}", id, if resp.get("result").is_some() { "success" } else { "error" });
+        println!(
+            "Request {}: {}",
+            id,
+            if resp.get("result").is_some() {
+                "success"
+            } else {
+                "error"
+            }
+        );
     }
 
     assert!(
@@ -846,7 +883,10 @@ fn subtract(a: i32, b: i32) -> i32 {
     println!("✓ All 3 commands returned success immediately");
 
     println!("\n=== Progress Notifications ===");
-    println!("Received {} progress notifications", progress_notifications.len());
+    println!(
+        "Received {} progress notifications",
+        progress_notifications.len()
+    );
 
     let mut job_ids: HashSet<String> = HashSet::new();
     let mut job_id_to_uri: HashMap<String, String> = HashMap::new();
@@ -883,7 +923,10 @@ fn subtract(a: i32, b: i32) -> i32 {
     }
 
     println!("\n=== Workspace Apply Edits ===");
-    println!("Received {} workspace/applyEdit requests", apply_edits.len());
+    println!(
+        "Received {} workspace/applyEdit requests",
+        apply_edits.len()
+    );
 
     let mut edited_uris: HashSet<String> = HashSet::new();
     for edit in &apply_edits {
@@ -908,14 +951,22 @@ fn subtract(a: i32, b: i32) -> i32 {
     }
 
     if apply_edits.len() >= 3 {
-        assert_eq!(
-            edited_uris.len(),
-            3,
-            "Expected edits for 3 different files"
+        assert_eq!(edited_uris.len(), 3, "Expected edits for 3 different files");
+        assert!(
+            edited_uris.contains(test_uri_1),
+            "Missing edit for {}",
+            test_uri_1
         );
-        assert!(edited_uris.contains(test_uri_1), "Missing edit for {}", test_uri_1);
-        assert!(edited_uris.contains(test_uri_2), "Missing edit for {}", test_uri_2);
-        assert!(edited_uris.contains(test_uri_3), "Missing edit for {}", test_uri_3);
+        assert!(
+            edited_uris.contains(test_uri_2),
+            "Missing edit for {}",
+            test_uri_2
+        );
+        assert!(
+            edited_uris.contains(test_uri_3),
+            "Missing edit for {}",
+            test_uri_3
+        );
         println!("✓ All 3 files received workspace/applyEdit");
     } else {
         println!(
@@ -927,7 +978,14 @@ fn subtract(a: i32, b: i32) -> i32 {
     let stderr = client.drain_stderr();
     if !stderr.is_empty() {
         println!("\n=== Server Stderr (last 2000 chars) ===");
-        let stderr_tail: String = stderr.chars().rev().take(2000).collect::<String>().chars().rev().collect();
+        let stderr_tail: String = stderr
+            .chars()
+            .rev()
+            .take(2000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
         println!("{}", stderr_tail);
     }
 

@@ -40,17 +40,27 @@ struct Part {
 }
 
 /// Build the prompt for function implementation with OpenCode.
-fn build_prompt(line: u32, character: u32, language_id: &str, file_contents: &str) -> String {
+fn build_prompt(
+    line: u32,
+    character: u32,
+    language_id: &str,
+    file_contents: &str,
+    output_path: &str,
+) -> String {
     format!(
-        "Implement the function body at line {}, character {} in the following {} file. \
-         Output ONLY the raw code for the function body (the code that goes between the curly braces). \
-         Do NOT include the function signature/declaration. \
-         Do NOT wrap the output in markdown code blocks. \
-         Do NOT include any explanations. \
-         Just output the raw implementation code:\n\n{}",
+        "Implement the function body at line {}, character {} in the following file. \
+         Write ONLY the function implementation (signature and body) to the file: {} \
+         Do NOT include any other code from the source file (no imports, no other functions). \
+         Do NOT output the code to stdout. \
+         Output only status messages or confirmation.\n\n<FILE-CONTENT>\n{}</FILE-CONTENT> \n\n\
+         <MUST-OBEY>\n\
+        You can overwrite the output file's content, but NEVER read it, just write to it.\n\
+Describe your steps before performing them.\n\
+</MUST-OBEY> \
+         ",
         line + 1,
         character + 1,
-        language_id,
+        output_path,
         file_contents
     )
 }
@@ -83,13 +93,16 @@ impl Backend for OpenCodeClient {
             file_path, line, character, language_id
         );
 
-        let prompt = build_prompt(line, character, language_id, file_contents);
+        // NOTE: implement_function is deprecated in favor of streaming, passing dummy path
+        let prompt = build_prompt(line, character, language_id, file_contents, "/tmp/dummy");
 
         let output = Command::new("opencode")
             .arg("run")
-            .arg(&prompt)
             .arg("--format")
             .arg("json")
+            .arg("--attach")
+            .arg("http://localhost:1337")
+            .arg(&prompt)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -115,23 +128,24 @@ impl Backend for OpenCodeClient {
         character: u32,
         language_id: &str,
         file_contents: &str,
+        output_path: &str,
         mut on_progress: Box<dyn FnMut(&str) + Send>,
-    ) -> Result<String, Box<dyn Error + Sync + Send>> {
+    ) -> Result<(), Box<dyn Error + Sync + Send>> {
         info!(
             "Calling opencode CLI (streaming) - file: {}, line: {}, character: {}, language: {}",
             file_path, line, character, language_id
         );
 
-        let prompt = build_prompt(line, character, language_id, file_contents);
+        let prompt = build_prompt(line, character, language_id, file_contents, output_path);
 
         let mut child = Command::new("opencode")
             .arg("run")
-            .arg("--format")
-            .arg("json")
-            .arg("--attach")
-            .arg("http://localhost:1337")
+            // .arg("--format")
+            // .arg("json")
+            // .arg("--attach")
+            // .arg("http://localhost:1337")
             .arg("--model")
-            .arg("opencode/claude-opus-4-5")
+            .arg("opencode/claude-sonnet-4-5")
             .arg(&prompt)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -145,26 +159,25 @@ impl Backend for OpenCodeClient {
 
         for line_result in reader.lines() {
             let line = line_result?;
+            info!("opencode output line: {}", line);
+            accumulated_text.push_str(&line);
+            accumulated_text.push('\n');
+            on_progress(accumulated_text.trim());
 
-            if let Some(text) = extract_text_from_line(&line) {
-                accumulated_text.push_str(&text);
-                let preview = strip_markdown_code_block(&accumulated_text);
-                on_progress(preview.trim());
-            }
+            // if let Some(text) = extract_text_from_line(&line) {
+            //     accumulated_text.push_str(&text);
+            //     let preview = strip_markdown_code_block(&accumulated_text);
+            //     on_progress(preview.trim());
+            // }
         }
 
         let status = child.wait()?;
         if !status.success() {
-            return Err("opencode CLI failed".into());
+            return Err(format!("opencode CLI failed: {}", accumulated_text).into());
         }
 
-        if accumulated_text.is_empty() {
-            return Err("No result found in opencode output".into());
-        }
-
-        let result = strip_markdown_code_block(&accumulated_text);
-        info!("OpenCode CLI returned {} bytes", result.len());
-        Ok(result.trim().to_string())
+        info!("OpenCode CLI finished successfully");
+        Ok(())
     }
 }
 
@@ -266,10 +279,11 @@ mod tests {
 
     #[test]
     fn test_build_prompt() {
-        let prompt = build_prompt(9, 4, "rust", "fn main() {}");
+        let prompt = build_prompt(9, 4, "rust", "fn main() {}", "/tmp/output.rs");
         assert!(prompt.contains("line 10"));
         assert!(prompt.contains("character 5"));
-        assert!(prompt.contains("rust"));
+        // assert!(prompt.contains("rust"));
         assert!(prompt.contains("fn main() {}"));
+        assert!(prompt.contains("/tmp/output.rs"));
     }
 }

@@ -37,7 +37,14 @@ function AgentAmp:_on_apply_edit(_err, result, _ctx)
             for _, text_edit in ipairs(change.edits or {}) do
                 local line = text_edit.range and text_edit.range.start and text_edit.range.start.line
                 if line then
+                    -- First try exact line match
                     local job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+                    
+                    -- If no match and this is a full-file edit (starts at line 0), find any job for this URI
+                    if not job_id and line == 0 then
+                        job_id = self.spinner_manager:find_any_job_by_uri(uri)
+                    end
+                    
                     if job_id then
                         self.spinner_manager:stop(job_id)
                         vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
@@ -53,7 +60,14 @@ function AgentAmp:_on_apply_edit(_err, result, _ctx)
         for _, text_edit in ipairs(edits) do
             local line = text_edit.range and text_edit.range.start and text_edit.range.start.line
             if line then
+                -- First try exact line match
                 local job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+                
+                -- If no match and this is a full-file edit (starts at line 0), find any job for this URI
+                if not job_id and line == 0 then
+                    job_id = self.spinner_manager:find_any_job_by_uri(uri)
+                end
+                
                 if job_id then
                     self.spinner_manager:stop(job_id)
                     vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)

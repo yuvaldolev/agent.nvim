@@ -18,6 +18,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::backend::create_backend;
+use crate::config::DELETE_TEMP_FILES;
 use crate::document_store::DocumentStore;
 use crate::job_queue::JobQueue;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
@@ -206,7 +207,7 @@ fn spawn_implementation_worker(
             original_line, line
         );
 
-        // Get fresh document state after acquiring the lock
+        // Get fresh document state after acquiring the lock (BASE for merge)
         let doc = match document_store.get(&uri) {
             Some(d) => d,
             None => {
@@ -215,7 +216,7 @@ fn spawn_implementation_worker(
                 return;
             }
         };
-        let doc_text = doc.text.clone();
+        let base_text = doc.text.clone();
 
         // Clone values for the progress callback closure
         let progress_job_id = job_id.clone();
@@ -223,12 +224,29 @@ fn spawn_implementation_worker(
         let progress_line = line;
         let progress_sender = lsp_client.clone_sender();
 
+        // Generate a temporary file path for the agent to create and write the implementation
+        // We DON'T create the file - let the agent create it to avoid unnecessary reads of empty files
+        // Place it in the same directory as the file being edited to avoid permission errors.
+        let parent_dir = std::path::Path::new(&file_path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("tmp");
+
+        let temp_filename = format!("agent_impl_{}", Uuid::new_v4());
+        let output_path = parent_dir.join(&temp_filename);
+        let output_path_str = output_path.to_string_lossy().to_string();
+        info!(
+            "Generated temp file path for agent output: {}",
+            output_path_str
+        );
+
         match backend.implement_function_streaming(
             &file_path,
             line,
             character,
             &language_id,
-            &doc_text,
+            &base_text,
+            &output_path_str,
             Box::new(move |preview| {
                 let params = ImplFunctionProgressParams {
                     job_id: progress_job_id.clone(),
@@ -244,21 +262,137 @@ fn spawn_implementation_worker(
                 }
             }),
         ) {
-            Ok(implementation) => {
-                // Calculate how many lines the implementation adds
-                let lines_added = implementation.lines().count() as i32;
+            Ok(_) => {
+                // Read the implementation from the temp file that the agent created
+                let implementation = match std::fs::read_to_string(&output_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Failed to read agent output from temp file: {}", e);
+                        job_queue.release(&uri, &job_id);
+                        return;
+                    }
+                };
 
-                let edit = WorkspaceEditBuilder::create_line_insert(
-                    &uri,
-                    &doc_text,
-                    line,
-                    &implementation,
-                );
+                // Clean up the temp file if configured to do so
+                if DELETE_TEMP_FILES {
+                    if let Err(e) = std::fs::remove_file(&output_path) {
+                        error!("Failed to remove temp file: {}", e);
+                    }
+                } else {
+                    info!("Preserving temp file for debugging: {}", output_path_str);
+                }
+
+                if implementation.trim().is_empty() {
+                    error!("Agent output file is empty");
+                    job_queue.release(&uri, &job_id);
+                    return;
+                }
+
+                if implementation.trim().is_empty() {
+                    error!("Agent output file is empty");
+                    job_queue.release(&uri, &job_id);
+                    return;
+                }
+
+                // Get "Yours" version (Current state with user edits)
+                let current_doc = match document_store.get(&uri) {
+                    Some(d) => d,
+                    None => {
+                        error!("Document not found when applying edit");
+                        job_queue.release(&uri, &job_id);
+                        return;
+                    }
+                };
+                let current_text = current_doc.text.clone();
+
+                // BUG FIX:
+                // 1. Correct start line: The User might trigger CodeAction inside the function body.
+                //    We need to find the actual start of the function signature to replace correctly.
+                // 2. Full File Check: If the Agent ignored the prompt and wrote the whole file,
+                //    `replace_function` would insert the WHOLE file into the function slot.
+
+                let base_lines: Vec<&str> = base_text.lines().collect();
+
+                // Heuristic: If implementation is large (> 80% of base) and contains base start/end lines?
+                // Or just: If implementation has much more lines than the function we are replacing?
+                // Let's assume for now we fix the prompt and rely on `replace_function`.
+                // But we MUST fix the start line.
+
+                let start_line = crate::utils::find_function_start(&base_lines, line as usize)
+                    .unwrap_or(line as usize);
+                info!("Adjusted start line from {} to {}", line, start_line);
+
+                // Check if implementation looks like the whole file.
+                // A single function usually isn't the whole file (unless the file is tiny).
+                // If implementation line count is close to base text line count?
+                // Better heuristic: If implementation contains "use " statements that match beginning of base_text?
+                // For now, let's trust the refined prompt + start_line fix.
+                // However, user said "re-adds other functions". This strongly implies full file output.
+                // If it IS full file, we should treat `implementation` as the `theirs` text directly.
+
+                let impl_lines_count = implementation.lines().count();
+                let base_lines_count = base_lines.len();
+
+                // Extremely rough heuristic: If implementation is > 50% of file (and file is not tiny), threat?
+                // Or if it starts with the first line of base_text?
+                let is_likely_full_file = if base_lines_count > 10 {
+                    // Check if first non-empty line of base matches first non-empty line of implementation
+                    let base_first = base_lines.iter().find(|l| !l.trim().is_empty());
+                    let impl_first = implementation.lines().find(|l| !l.trim().is_empty());
+                    // base_first is Option<&&str>, impl_first is Option<&str>
+                    match (base_first, impl_first) {
+                        (Some(b), Some(i)) => *b == i && impl_lines_count > base_lines_count / 2,
+                        _ => false,
+                    }
+                } else {
+                    false
+                };
+
+                let theirs_text = if is_likely_full_file {
+                    info!("Detected likely full-file output from Agent. Using implementation as full text.");
+                    implementation.clone()
+                } else {
+                    // Use 3-way merge helper logic (snippet replacement)
+                    // We need to construct "Theirs" manually if we changed the start line logic,
+                    // because `create_3way_merge_edit` takes `line`.
+                    // We should update `create_3way_merge_edit` or call `replace_function` here.
+                    // `create_3way_merge_edit` calls `replace_function`.
+                    // So we can just pass the new `start_line`.
+                    match crate::utils::replace_function(&base_text, start_line, &implementation) {
+                        Some(text) => text,
+                        None => {
+                            error!("Failed to replace function in base text");
+                            job_queue.release(&uri, &job_id);
+                            return;
+                        }
+                    }
+                };
+
+                // Perform 3-way merge
+                let merged_text = match diffy::merge(&base_text, &current_text, &theirs_text) {
+                    Ok(text) => text,
+                    Err(text) => text,
+                };
+
+                let edit =
+                    WorkspaceEditBuilder::create_full_replace(&uri, &current_text, &merged_text);
+
                 if let Err(e) = lsp_client.send_apply_edit(edit) {
                     error!("Failed to send apply edit: {}", e);
                 }
 
-                // Adjust pending job line numbers to account for the inserted lines
+                // Adjust pending job line numbers (using rough estimation)
+                let new_lines_count = implementation.lines().count() as i32;
+                let old_lines_count = crate::utils::find_function_end(&base_lines, start_line)
+                    .map(|end| (end - start_line + 1) as i32)
+                    .unwrap_or(0);
+
+                let lines_added = if is_likely_full_file {
+                    (impl_lines_count as i32) - (base_lines_count as i32)
+                } else {
+                    new_lines_count - old_lines_count
+                };
+
                 job_queue.adjust_pending_lines(&uri, line, lines_added);
                 info!(
                     "Adjusted pending lines: edit_line={}, lines_added={}",
@@ -267,6 +401,17 @@ fn spawn_implementation_worker(
             }
             Err(e) => {
                 error!("Backend error: {}", e);
+                // Clean up the temp file on error (if it exists and cleanup is enabled)
+                if DELETE_TEMP_FILES && output_path.exists() {
+                    if let Err(cleanup_err) = std::fs::remove_file(&output_path) {
+                        error!("Failed to remove temp file after error: {}", cleanup_err);
+                    }
+                } else if !DELETE_TEMP_FILES && output_path.exists() {
+                    info!(
+                        "Preserving temp file for debugging (error case): {}",
+                        output_path_str
+                    );
+                }
             }
         }
 

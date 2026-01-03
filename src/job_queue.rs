@@ -111,7 +111,6 @@ impl JobQueue {
             }
         }
     }
-
 }
 
 impl Default for JobQueue {

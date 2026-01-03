@@ -178,4 +178,19 @@ function SpinnerManager:find_job_by_uri_line(uri, line)
     return nil
 end
 
+function SpinnerManager:find_any_job_by_uri(uri)
+    for job_id, spinner in pairs(self.spinners) do
+        if spinner:is_running() and spinner.bufnr then
+            local bufnr = spinner.bufnr
+            if vim.api.nvim_buf_is_valid(bufnr) then
+                local buf_uri = vim.uri_from_bufnr(bufnr)
+                if buf_uri == uri then
+                    return job_id
+                end
+            end
+        end
+    end
+    return nil
+end
+
 return SpinnerManager
