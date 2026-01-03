@@ -48,14 +48,18 @@ fn build_prompt(
     output_path: &str,
 ) -> String {
     format!(
-        "Implement the function body at line {}, character {} in the following {} file. \
+        "Implement the function body at line {}, character {} in the following file. \
          Write ONLY the function implementation (signature and body) to the file: {} \
          Do NOT include any other code from the source file (no imports, no other functions). \
          Do NOT output the code to stdout. \
-         Output only status messages or confirmation.\n\n<FILE-CONTENT>\n{}</FILE-CONTENT>",
+         Output only status messages or confirmation.\n\n<FILE-CONTENT>\n{}</FILE-CONTENT> \n\n\
+         <MUST-OBEY>\n\
+        You can overwrite the output file's content, but NEVER read it, just write to it.\n\
+Describe your steps before performing them.\n\
+</MUST-OBEY> \
+         ",
         line + 1,
         character + 1,
-        language_id,
         output_path,
         file_contents
     )
@@ -278,7 +282,7 @@ mod tests {
         let prompt = build_prompt(9, 4, "rust", "fn main() {}", "/tmp/output.rs");
         assert!(prompt.contains("line 10"));
         assert!(prompt.contains("character 5"));
-        assert!(prompt.contains("rust"));
+        // assert!(prompt.contains("rust"));
         assert!(prompt.contains("fn main() {}"));
         assert!(prompt.contains("/tmp/output.rs"));
     }

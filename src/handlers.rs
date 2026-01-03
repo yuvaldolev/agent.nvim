@@ -229,9 +229,10 @@ fn spawn_implementation_worker(
         // Place it in the same directory as the file being edited to avoid permission errors.
         let parent_dir = std::path::Path::new(&file_path)
             .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("tmp");
 
-        let temp_filename = format!("agent_impl_{}.rs", Uuid::new_v4());
+        let temp_filename = format!("agent_impl_{}", Uuid::new_v4());
         let output_path = parent_dir.join(&temp_filename);
         let output_path_str = output_path.to_string_lossy().to_string();
         info!(
