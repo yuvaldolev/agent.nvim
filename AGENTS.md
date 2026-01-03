@@ -66,8 +66,23 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - `textDocument/didOpen`, `textDocument/didChange`: INCREMENTAL sync to DocumentStore
 - `textDocument/completion`: Stub (returns null)
 - `textDocument/codeAction`: Returns "Implement function with Amp" command
-- `workspace/executeCommand`: Handles `amp.implFunction`, calls Amp CLI with streaming, sends `workspace/applyEdit`
+- `workspace/executeCommand`: Handles `amp.implFunction`, calls Amp CLI, sends `workspace/applyEdit`
 - `amp/implFunctionProgress`: Server-to-client notification with streaming preview text (params: `job_id`, `uri`, `line`, `preview`)
+
+## Agent Interaction Protocol
+
+The Agent interaction has been redesigned to be file-based to avoid buffer size limits and ensure robust merging:
+
+1.  **Temp File Creation**: LSP creates a temporary file in the **same directory** as the source file (to avoid permission issues).
+2.  **Prompting**: Agent is prompted to write the *full function implementation* (signature + body) directly to this temporary file.
+3.  **Reading**: LSP reads the content of the temporary file after the Agent completes.
+4.  **Merging**:
+    *   **3-way Merge**: LSP uses `diffy` to perform a 3-way merge between:
+        *   **Base**: File content when the job started
+        *   **Yours**: Current file content (including any user edits made while Agent was running)
+        *   **Theirs**: The Agent's implementation (applied to the Base)
+    *   **Duplicate Prevention**: Heuristics detect if the Agent outputs the *entire file* instead of just the snippet, and handle it correctly.
+    *   **Signature Matching**: Logic scans backwards to find the correct start of the function, ensuring even internal CodeAction triggers replace the full signature.
 
 ## Backend Selection
 

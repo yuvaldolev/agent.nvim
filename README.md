@@ -16,6 +16,7 @@ agent.nvim provides a seamless integration between Neovim and the Amp AI coding 
 - **Concurrent implementations** — Implement multiple functions simultaneously with per-file serialization
 - Animated spinner feedback while waiting for AI response (supports multiple concurrent spinners)
 - Automatic code insertion via LSP workspace edits with line tracking
+- **3-way merge** — Smart merging of AI-generated code with user edits to prevent conflicts
 - Language-agnostic design (works with any programming language)
 
 ## Requirements
@@ -132,13 +133,16 @@ sequenceDiagram
     LSP-->>Plugin: CodeAction (amp.implFunction)
     Plugin->>Plugin: Start spinner
     Plugin->>LSP: workspace/executeCommand
-    LSP->>Amp: amp --execute "..." --stream-json
+    LSP->>Disk: Create Temp File
+    LSP->>Amp: amp --execute "..." (output_to_file)
     loop Streaming
-        Amp-->>LSP: Partial implementation
+        Amp-->>LSP: Status updates (ghost text)
         LSP->>Plugin: amp/implFunctionProgress
         Plugin->>Plugin: Update ghost text preview
     end
-    Amp-->>LSP: Final result
+    Amp->>Disk: Write implementation
+    LSP->>Disk: Read implementation
+    LSP->>LSP: 3-way Merge (Base, Yours, Theirs)
     LSP->>Plugin: workspace/applyEdit
     Plugin->>Plugin: Stop spinner
     Plugin->>Neovim: Apply text edits
@@ -257,10 +261,11 @@ The prompt includes:
 - Cursor position (line, character)
 - Language ID
 - Full file contents
+- **Output Path**: A path to a temporary file where the Agent should write the result
 
-The CLI output is processed as a stream of JSON messages:
-- **`type: "assistant"`** messages contain incremental text, which is sent to the client via `amp/implFunctionProgress` notifications for real-time ghost text preview
-- **`type: "result"`** messages contain the final implementation, which triggers a `workspace/applyEdit` request
+The LSP server listens to `stdout` for status updates:
+- **`type: "assistant"`** messages contain incremental text/status, used for ghost text preview
+- **`type: "result"`** / completion: The server reads the final implementation from the temporary file.
 
 ## Development
 
