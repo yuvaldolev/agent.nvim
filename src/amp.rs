@@ -139,13 +139,15 @@ impl Backend for AmpClient {
         language_id: &str,
         file_contents: &str,
         output_path: &str,
+        function_signature: &str,
         mut on_progress: Box<dyn FnMut(&str) + Send>,
     ) -> Result<(), Box<dyn Error + Sync + Send>> {
         info!(
-            "Calling amp CLI (streaming) - file: {}, line: {}, character: {}, language: {}",
-            file_path, line, character, language_id
+            "Calling amp CLI (streaming) - file: {}, line: {}, character: {}, language: {}, function: {}",
+            file_path, line, character, language_id, function_signature
         );
 
+        // TODO: Include function_signature in the prompt for Amp as well
         let prompt = build_prompt(line, character, language_id, file_contents, output_path);
 
         let mut child = Command::new("amp")
