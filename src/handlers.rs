@@ -18,6 +18,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::backend::create_backend;
+use crate::config::DELETE_TEMP_FILES;
 use crate::document_store::DocumentStore;
 use crate::job_queue::JobQueue;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
@@ -223,31 +224,20 @@ fn spawn_implementation_worker(
         let progress_line = line;
         let progress_sender = lsp_client.clone_sender();
 
-        // Create a temporary file for the agent to output the implementation
-        // User requested to create it within the project directory to avoid permission errors.
-        // We will try to create it in the same directory as the file being edited.
+        // Generate a temporary file path for the agent to create and write the implementation
+        // We DON'T create the file - let the agent create it to avoid unnecessary reads of empty files
+        // Place it in the same directory as the file being edited to avoid permission errors.
         let parent_dir = std::path::Path::new(&file_path)
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."));
 
-        let temp_file = match tempfile::Builder::new()
-            .prefix("agent_impl_")
-            .suffix(".rs") // Helpful for syntax highlighting if agent peeks, though not strictly necessary
-            .tempfile_in(parent_dir)
-        {
-            Ok(t) => t,
-            Err(e) => {
-                error!(
-                    "Failed to create temp file in {}: {}",
-                    parent_dir.display(),
-                    e
-                );
-                job_queue.release(&uri, &job_id);
-                return;
-            }
-        };
-        let output_path = temp_file.path().to_string_lossy().to_string();
-        info!("Created temp file for agent output: {}", output_path);
+        let temp_filename = format!("agent_impl_{}.rs", Uuid::new_v4());
+        let output_path = parent_dir.join(&temp_filename);
+        let output_path_str = output_path.to_string_lossy().to_string();
+        info!(
+            "Generated temp file path for agent output: {}",
+            output_path_str
+        );
 
         match backend.implement_function_streaming(
             &file_path,
@@ -255,7 +245,7 @@ fn spawn_implementation_worker(
             character,
             &language_id,
             &base_text,
-            &output_path,
+            &output_path_str,
             Box::new(move |preview| {
                 let params = ImplFunctionProgressParams {
                     job_id: progress_job_id.clone(),
@@ -272,8 +262,8 @@ fn spawn_implementation_worker(
             }),
         ) {
             Ok(_) => {
-                // Read the implementation from the temp file
-                let implementation = match std::fs::read_to_string(temp_file.path()) {
+                // Read the implementation from the temp file that the agent created
+                let implementation = match std::fs::read_to_string(&output_path) {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to read agent output from temp file: {}", e);
@@ -281,6 +271,15 @@ fn spawn_implementation_worker(
                         return;
                     }
                 };
+
+                // Clean up the temp file if configured to do so
+                if DELETE_TEMP_FILES {
+                    if let Err(e) = std::fs::remove_file(&output_path) {
+                        error!("Failed to remove temp file: {}", e);
+                    }
+                } else {
+                    info!("Preserving temp file for debugging: {}", output_path_str);
+                }
 
                 if implementation.trim().is_empty() {
                     error!("Agent output file is empty");
@@ -401,6 +400,17 @@ fn spawn_implementation_worker(
             }
             Err(e) => {
                 error!("Backend error: {}", e);
+                // Clean up the temp file on error (if it exists and cleanup is enabled)
+                if DELETE_TEMP_FILES && output_path.exists() {
+                    if let Err(cleanup_err) = std::fs::remove_file(&output_path) {
+                        error!("Failed to remove temp file after error: {}", cleanup_err);
+                    }
+                } else if !DELETE_TEMP_FILES && output_path.exists() {
+                    info!(
+                        "Preserving temp file for debugging (error case): {}",
+                        output_path_str
+                    );
+                }
             }
         }
 

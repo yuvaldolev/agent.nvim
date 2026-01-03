@@ -11,3 +11,11 @@ pub enum BackendType {
 ///
 /// Change this constant to switch between backends.
 pub const CURRENT_BACKEND: BackendType = BackendType::OpenCode;
+
+/// Whether to delete temporary agent implementation files after use.
+///
+/// When false, temporary files will be preserved in the same directory as the source file.
+/// This is useful for debugging agent output.
+///
+/// Default: true (delete temp files)
+pub const DELETE_TEMP_FILES: bool = false;

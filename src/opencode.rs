@@ -52,7 +52,7 @@ fn build_prompt(
          Write ONLY the function implementation (signature and body) to the file: {} \
          Do NOT include any other code from the source file (no imports, no other functions). \
          Do NOT output the code to stdout. \
-         Output only status messages or confirmation.\n\n{}",
+         Output only status messages or confirmation.\n\n<FILE-CONTENT>\n{}</FILE-CONTENT>",
         line + 1,
         character + 1,
         language_id,
@@ -94,9 +94,11 @@ impl Backend for OpenCodeClient {
 
         let output = Command::new("opencode")
             .arg("run")
-            .arg(&prompt)
             .arg("--format")
             .arg("json")
+            .arg("--attach")
+            .arg("http://localhost:1337")
+            .arg(&prompt)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -134,8 +136,8 @@ impl Backend for OpenCodeClient {
 
         let mut child = Command::new("opencode")
             .arg("run")
-            .arg("--format")
-            .arg("json")
+            // .arg("--format")
+            // .arg("json")
             // .arg("--attach")
             // .arg("http://localhost:1337")
             .arg("--model")
@@ -154,12 +156,15 @@ impl Backend for OpenCodeClient {
         for line_result in reader.lines() {
             let line = line_result?;
             info!("opencode output line: {}", line);
+            accumulated_text.push_str(&line);
+            accumulated_text.push('\n');
+            on_progress(accumulated_text.trim());
 
-            if let Some(text) = extract_text_from_line(&line) {
-                accumulated_text.push_str(&text);
-                let preview = strip_markdown_code_block(&accumulated_text);
-                on_progress(preview.trim());
-            }
+            // if let Some(text) = extract_text_from_line(&line) {
+            //     accumulated_text.push_str(&text);
+            //     let preview = strip_markdown_code_block(&accumulated_text);
+            //     on_progress(preview.trim());
+            // }
         }
 
         let status = child.wait()?;

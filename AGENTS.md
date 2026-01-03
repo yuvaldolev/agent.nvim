@@ -55,7 +55,7 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 - **document_store.rs**: `DocumentStore` with `Arc<Mutex<HashMap<Url, Document>>>` for tracking open files
 - **job_queue.rs**: `JobQueue` for per-file serialization of concurrent implementations with automatic line tracking
 - **backend.rs**: `Backend` trait for AI provider abstraction, `create_backend()` factory function
-- **config.rs**: `BackendType` enum and `CURRENT_BACKEND` configuration constant
+- **config.rs**: `BackendType` enum, `CURRENT_BACKEND` configuration constant, and `DELETE_TEMP_FILES` option
 - **amp.rs**: `AmpClient` with `implement_function_streaming()` that reads `amp` CLI stdout line-by-line and calls progress callback
 - **opencode.rs**: `OpenCodeClient` with `implement_function_streaming()` that reads `opencode` CLI stdout and calls progress callback
 - **lsp_utils.rs**: `LspClient` (response helpers) and `WorkspaceEditBuilder` (workspace edits)
@@ -73,10 +73,11 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 
 The Agent interaction has been redesigned to be file-based to avoid buffer size limits and ensure robust merging:
 
-1.  **Temp File Creation**: LSP creates a temporary file in the **same directory** as the source file (to avoid permission issues).
+1.  **Temp File Path Generation**: LSP generates a unique temporary file path in the **same directory** as the source file (to avoid permission issues). The file is NOT pre-created, allowing the agent to create it directly without reading an empty file first.
 2.  **Prompting**: Agent is prompted to write the *full function implementation* (signature + body) directly to this temporary file.
 3.  **Reading**: LSP reads the content of the temporary file after the Agent completes.
-4.  **Merging**:
+4.  **Cleanup**: By default, temporary files are deleted after use. Set `DELETE_TEMP_FILES = false` in `src/config.rs` to preserve them for debugging.
+5.  **Merging**:
     *   **3-way Merge**: LSP uses `diffy` to perform a 3-way merge between:
         *   **Base**: File content when the job started
         *   **Yours**: Current file content (including any user edits made while Agent was running)
@@ -84,19 +85,31 @@ The Agent interaction has been redesigned to be file-based to avoid buffer size 
     *   **Duplicate Prevention**: Heuristics detect if the Agent outputs the *entire file* instead of just the snippet, and handle it correctly.
     *   **Signature Matching**: Logic scans backwards to find the correct start of the function, ensuring even internal CodeAction triggers replace the full signature.
 
-## Backend Selection
+## Configuration
 
-The server supports multiple AI backends. To switch backends, edit `src/config.rs`:
+The server supports multiple configuration options in `src/config.rs`:
+
+### Backend Selection
 
 ```rust
-// Use Amp backend (default)
+// Use Amp backend
 pub const CURRENT_BACKEND: BackendType = BackendType::Amp;
 
-// Or use OpenCode backend
+// Or use OpenCode backend (default)
 pub const CURRENT_BACKEND: BackendType = BackendType::OpenCode;
 ```
 
-After changing the backend, rebuild the server with `cargo build`.
+### Temporary File Cleanup
+
+```rust
+// Delete temporary files after use (default)
+pub const DELETE_TEMP_FILES: bool = true;
+
+// Preserve temporary files for debugging
+pub const DELETE_TEMP_FILES: bool = false;
+```
+
+After changing any configuration, rebuild the server with `cargo build`.
 
 ### Backend Requirements
 
