@@ -20,11 +20,12 @@ use uuid::Uuid;
 use crate::backend::create_backend;
 use crate::config::DELETE_TEMP_FILES;
 use crate::document_store::DocumentStore;
-use crate::job_queue::JobQueue;
+use crate::job_tracker::JobTracker;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
 
 pub const COMMAND_IMPL_FUNCTION: &str = "amp.implFunction";
 pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "amp/implFunctionProgress";
+pub const NOTIFICATION_JOB_COMPLETED: &str = "amp/jobCompleted";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImplFunctionProgressParams {
@@ -32,24 +33,36 @@ pub struct ImplFunctionProgressParams {
     pub uri: String,
     pub line: u32,
     pub preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct JobCompletedParams {
+    pub job_id: String,
+    pub uri: String,
+    pub success: bool,
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_id: Option<String>,
 }
 
 pub struct RequestHandler<'a> {
     connection: &'a Connection,
     document_store: Arc<DocumentStore>,
-    job_queue: Arc<JobQueue>,
+    job_tracker: Arc<JobTracker>,
 }
 
 impl<'a> RequestHandler<'a> {
     pub fn new(
         connection: &'a Connection,
         document_store: Arc<DocumentStore>,
-        job_queue: Arc<JobQueue>,
+        job_tracker: Arc<JobTracker>,
     ) -> Self {
         Self {
             connection,
             document_store,
-            job_queue,
+            job_tracker,
         }
     }
 
@@ -147,11 +160,38 @@ impl<'a> RequestHandler<'a> {
         let character: u32 = serde_json::from_value(args[2].clone())?;
         let _version: i32 = serde_json::from_value(args[3].clone())?;
         let language_id: String = serde_json::from_value(args[4].clone())?;
+        // Optional 6th argument: pending_id from client for correlation
+        let pending_id: Option<String> = args
+            .get(5)
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
 
         let uri = Url::parse(&uri_str)?;
-        if self.document_store.get(&uri).is_none() {
-            return lsp_client.send_invalid_params(req, "Document not found");
+        let doc = match self.document_store.get(&uri) {
+            Some(d) => d,
+            None => return lsp_client.send_invalid_params(req, "Document not found"),
+        };
+
+        // Check if we've reached the max concurrent jobs limit for this file
+        if self.job_tracker.active_job_count(&uri)
+            >= crate::job_tracker::MAX_CONCURRENT_JOBS_PER_FILE
+        {
+            return lsp_client.send_invalid_params(
+                req,
+                &format!(
+                    "Maximum concurrent implementations ({}) reached for this file. Please wait.",
+                    crate::job_tracker::MAX_CONCURRENT_JOBS_PER_FILE
+                ),
+            );
         }
+
+        // Extract function signature for tracking
+        let function_signature = crate::utils::extract_function_signature(&doc.text, line as usize)
+            .unwrap_or_else(|| format!("line_{}", line));
+
+        info!(
+            "Extracted function signature for line {}: '{}'",
+            line, function_signature
+        );
 
         let file_path = uri
             .to_file_path()
@@ -162,7 +202,7 @@ impl<'a> RequestHandler<'a> {
         let job_id = Uuid::new_v4().to_string();
         let sender = self.connection.sender.clone();
         let uri_clone = uri.clone();
-        let job_queue = self.job_queue.clone();
+        let job_tracker = self.job_tracker.clone();
         let document_store = self.document_store.clone();
 
         lsp_client.send_success(req, serde_json::Value::Null)?;
@@ -175,8 +215,10 @@ impl<'a> RequestHandler<'a> {
             line,
             character,
             language_id,
-            job_queue,
+            function_signature,
+            job_tracker,
             document_store,
+            pending_id,
         );
 
         Ok(())
@@ -191,38 +233,65 @@ fn spawn_implementation_worker(
     original_line: u32,
     character: u32,
     language_id: String,
-    job_queue: Arc<JobQueue>,
+    function_signature: String,
+    job_tracker: Arc<JobTracker>,
     document_store: Arc<DocumentStore>,
+    pending_id: Option<String>,
 ) {
     thread::spawn(move || {
-        let lsp_client = LspClient::new_from_sender(sender);
+        let lsp_client = LspClient::new_from_sender(sender.clone());
         let backend = create_backend();
 
-        // Acquire the slot for this file (blocks if another job is active)
-        // Returns the adjusted line number (may differ from original if previous edits shifted lines)
-        let line = job_queue.acquire(&uri, &job_id, original_line);
+        // Register the job (non-blocking)
+        if let Err(e) =
+            job_tracker.register_job(&uri, &job_id, original_line, function_signature.clone())
+        {
+            error!("Failed to register job: {}", e);
+            // Send job completed with error
+            let _ = lsp_client.send_notification(
+                NOTIFICATION_JOB_COMPLETED,
+                JobCompletedParams {
+                    job_id: job_id.clone(),
+                    uri: uri.to_string(),
+                    success: false,
+                    error: Some(e),
+                    pending_id: pending_id.clone(),
+                },
+            );
+            return;
+        }
 
         info!(
-            "Acquired slot: original_line={}, adjusted_line={}",
-            original_line, line
+            "Registered job {} at line {} for {}",
+            job_id, original_line, uri
         );
 
-        // Get fresh document state after acquiring the lock (BASE for merge)
+        // Get current document state
         let doc = match document_store.get(&uri) {
             Some(d) => d,
             None => {
-                error!("Document not found after acquiring lock");
-                job_queue.release(&uri, &job_id);
+                error!("Document not found");
+                job_tracker.complete_job(&uri, &job_id);
+                let _ = lsp_client.send_notification(
+                    NOTIFICATION_JOB_COMPLETED,
+                    JobCompletedParams {
+                        job_id: job_id.clone(),
+                        uri: uri.to_string(),
+                        success: false,
+                        error: Some("Document not found".to_string()),
+                        pending_id: pending_id.clone(),
+                    },
+                );
                 return;
             }
         };
-        let base_text = doc.text.clone();
 
         // Clone values for the progress callback closure
         let progress_job_id = job_id.clone();
         let progress_uri = uri.to_string();
-        let progress_line = line;
+        let progress_job_tracker = job_tracker.clone();
         let progress_sender = lsp_client.clone_sender();
+        let progress_pending_id = pending_id.clone();
 
         // Generate a temporary file path for the agent to create and write the implementation
         // We DON'T create the file - let the agent create it to avoid unnecessary reads of empty files
@@ -242,17 +311,24 @@ fn spawn_implementation_worker(
 
         match backend.implement_function_streaming(
             &file_path,
-            line,
+            original_line,
             character,
             &language_id,
-            &base_text,
+            &doc.text,
             &output_path_str,
+            &function_signature,
             Box::new(move |preview| {
+                // Get current line (may have been adjusted by other jobs)
+                let current_line = progress_job_tracker
+                    .get_current_line(&progress_job_id)
+                    .unwrap_or(original_line);
+
                 let params = ImplFunctionProgressParams {
                     job_id: progress_job_id.clone(),
                     uri: progress_uri.clone(),
-                    line: progress_line,
+                    line: current_line,
                     preview: preview.to_string(),
+                    pending_id: progress_pending_id.clone(),
                 };
                 let progress_client = LspClient::new_from_sender(progress_sender.clone());
                 if let Err(e) =
@@ -268,10 +344,29 @@ fn spawn_implementation_worker(
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to read agent output from temp file: {}", e);
-                        job_queue.release(&uri, &job_id);
+                        job_tracker.complete_job(&uri, &job_id);
+                        let _ = lsp_client.send_notification(
+                            NOTIFICATION_JOB_COMPLETED,
+                            JobCompletedParams {
+                                job_id: job_id.clone(),
+                                uri: uri.to_string(),
+                                success: false,
+                                error: Some(format!("Failed to read output: {}", e)),
+                                pending_id: pending_id.clone(),
+                            },
+                        );
                         return;
                     }
                 };
+
+                // Log the implementation we received for debugging
+                info!(
+                    "Job {} (original_line={}, signature='{}') received implementation:\n{}",
+                    job_id,
+                    original_line,
+                    function_signature,
+                    implementation.lines().take(5).collect::<Vec<_>>().join("\n")
+                );
 
                 // Clean up the temp file if configured to do so
                 if DELETE_TEMP_FILES {
@@ -284,120 +379,137 @@ fn spawn_implementation_worker(
 
                 if implementation.trim().is_empty() {
                     error!("Agent output file is empty");
-                    job_queue.release(&uri, &job_id);
+                    job_tracker.complete_job(&uri, &job_id);
+                    let _ = lsp_client.send_notification(
+                        NOTIFICATION_JOB_COMPLETED,
+                        JobCompletedParams {
+                            job_id: job_id.clone(),
+                            uri: uri.to_string(),
+                            success: false,
+                            error: Some("Agent output is empty".to_string()),
+                            pending_id: pending_id.clone(),
+                        },
+                    );
                     return;
                 }
 
-                if implementation.trim().is_empty() {
-                    error!("Agent output file is empty");
-                    job_queue.release(&uri, &job_id);
-                    return;
-                }
-
-                // Get "Yours" version (Current state with user edits)
+                // Get current document state
                 let current_doc = match document_store.get(&uri) {
                     Some(d) => d,
                     None => {
                         error!("Document not found when applying edit");
-                        job_queue.release(&uri, &job_id);
+                        job_tracker.complete_job(&uri, &job_id);
+                        let _ = lsp_client.send_notification(
+                            NOTIFICATION_JOB_COMPLETED,
+                            JobCompletedParams {
+                                job_id: job_id.clone(),
+                                uri: uri.to_string(),
+                                success: false,
+                                error: Some("Document not found".to_string()),
+                                pending_id: pending_id.clone(),
+                            },
+                        );
                         return;
                     }
                 };
                 let current_text = current_doc.text.clone();
 
-                // BUG FIX:
-                // 1. Correct start line: The User might trigger CodeAction inside the function body.
-                //    We need to find the actual start of the function signature to replace correctly.
-                // 2. Full File Check: If the Agent ignored the prompt and wrote the whole file,
-                //    `replace_function` would insert the WHOLE file into the function slot.
+                // Get current line (may have been adjusted by other jobs)
+                let current_line = job_tracker
+                    .get_current_line(&job_id)
+                    .unwrap_or(original_line) as usize;
 
-                let base_lines: Vec<&str> = base_text.lines().collect();
+                // Get the expected function signature for verification
+                // This ensures we replace the correct function even if line numbers have shifted
+                let expected_signature = job_tracker.get_function_signature(&job_id);
 
-                // Heuristic: If implementation is large (> 80% of base) and contains base start/end lines?
-                // Or just: If implementation has much more lines than the function we are replacing?
-                // Let's assume for now we fix the prompt and rely on `replace_function`.
-                // But we MUST fix the start line.
-
-                let start_line = crate::utils::find_function_start(&base_lines, line as usize)
-                    .unwrap_or(line as usize);
-                info!("Adjusted start line from {} to {}", line, start_line);
-
-                // Check if implementation looks like the whole file.
-                // A single function usually isn't the whole file (unless the file is tiny).
-                // If implementation line count is close to base text line count?
-                // Better heuristic: If implementation contains "use " statements that match beginning of base_text?
-                // For now, let's trust the refined prompt + start_line fix.
-                // However, user said "re-adds other functions". This strongly implies full file output.
-                // If it IS full file, we should treat `implementation` as the `theirs` text directly.
-
-                let impl_lines_count = implementation.lines().count();
-                let base_lines_count = base_lines.len();
-
-                // Extremely rough heuristic: If implementation is > 50% of file (and file is not tiny), threat?
-                // Or if it starts with the first line of base_text?
-                let is_likely_full_file = if base_lines_count > 10 {
-                    // Check if first non-empty line of base matches first non-empty line of implementation
-                    let base_first = base_lines.iter().find(|l| !l.trim().is_empty());
-                    let impl_first = implementation.lines().find(|l| !l.trim().is_empty());
-                    // base_first is Option<&&str>, impl_first is Option<&str>
-                    match (base_first, impl_first) {
-                        (Some(b), Some(i)) => *b == i && impl_lines_count > base_lines_count / 2,
-                        _ => false,
-                    }
-                } else {
-                    false
-                };
-
-                let theirs_text = if is_likely_full_file {
-                    info!("Detected likely full-file output from Agent. Using implementation as full text.");
-                    implementation.clone()
-                } else {
-                    // Use 3-way merge helper logic (snippet replacement)
-                    // We need to construct "Theirs" manually if we changed the start line logic,
-                    // because `create_3way_merge_edit` takes `line`.
-                    // We should update `create_3way_merge_edit` or call `replace_function` here.
-                    // `create_3way_merge_edit` calls `replace_function`.
-                    // So we can just pass the new `start_line`.
-                    match crate::utils::replace_function(&base_text, start_line, &implementation) {
-                        Some(text) => text,
-                        None => {
-                            error!("Failed to replace function in base text");
-                            job_queue.release(&uri, &job_id);
+                // Replace function in current document
+                // This always uses latest agent output, overriding any user edits to this specific function
+                let (new_text, start_line, end_line, lines_delta) =
+                    match crate::utils::replace_function_in_document(
+                        &current_text,
+                        current_line,
+                        &implementation,
+                        expected_signature.as_deref(),
+                    ) {
+                        Ok(result) => result,
+                        Err(e) => {
+                            error!("Failed to replace function: {}", e);
+                            job_tracker.complete_job(&uri, &job_id);
+                            let _ = lsp_client.send_notification(
+                                NOTIFICATION_JOB_COMPLETED,
+                                JobCompletedParams {
+                                    job_id: job_id.clone(),
+                                    uri: uri.to_string(),
+                                    success: false,
+                                    error: Some(format!("Failed to replace function: {}", e)),
+                                    pending_id: pending_id.clone(),
+                                },
+                            );
                             return;
                         }
-                    }
-                };
+                    };
 
-                // Perform 3-way merge
-                let merged_text = match diffy::merge(&base_text, &current_text, &theirs_text) {
-                    Ok(text) => text,
-                    Err(text) => text,
-                };
+                info!(
+                    "Replaced function at lines {}-{}, delta: {}",
+                    start_line, end_line, lines_delta
+                );
 
+                // Create workspace edit
                 let edit =
-                    WorkspaceEditBuilder::create_full_replace(&uri, &current_text, &merged_text);
+                    WorkspaceEditBuilder::create_full_replace(&uri, &current_text, &new_text);
 
+                // Send the edit
                 if let Err(e) = lsp_client.send_apply_edit(edit) {
                     error!("Failed to send apply edit: {}", e);
+                    job_tracker.complete_job(&uri, &job_id);
+                    let _ = lsp_client.send_notification(
+                        NOTIFICATION_JOB_COMPLETED,
+                        JobCompletedParams {
+                            job_id: job_id.clone(),
+                            uri: uri.to_string(),
+                            success: false,
+                            error: Some(format!("Failed to apply edit: {}", e)),
+                            pending_id: pending_id.clone(),
+                        },
+                    );
+                    return;
                 }
 
-                // Adjust pending job line numbers (using rough estimation)
-                let new_lines_count = implementation.lines().count() as i32;
-                let old_lines_count = crate::utils::find_function_end(&base_lines, start_line)
-                    .map(|end| (end - start_line + 1) as i32)
-                    .unwrap_or(0);
+                // Adjust other jobs' lines
+                job_tracker.adjust_lines_for_edit(&uri, start_line, end_line, lines_delta, &job_id);
 
-                let lines_added = if is_likely_full_file {
-                    (impl_lines_count as i32) - (base_lines_count as i32)
-                } else {
-                    new_lines_count - old_lines_count
-                };
+                // Send line update notifications to other jobs
+                let other_jobs = job_tracker.get_active_jobs(&uri);
+                for (other_job_id, updated_line) in other_jobs {
+                    if other_job_id != job_id {
+                        let _ = lsp_client.send_notification(
+                            NOTIFICATION_IMPL_FUNCTION_PROGRESS,
+                            ImplFunctionProgressParams {
+                                job_id: other_job_id,
+                                uri: uri.to_string(),
+                                line: updated_line,
+                                preview: String::new(), // Empty preview indicates line update only
+                                pending_id: None, // Other jobs already have their pending_id resolved
+                            },
+                        );
+                    }
+                }
 
-                job_queue.adjust_pending_lines(&uri, line, lines_added);
-                info!(
-                    "Adjusted pending lines: edit_line={}, lines_added={}",
-                    line, lines_added
+                // Send job completed notification
+                let _ = lsp_client.send_notification(
+                    NOTIFICATION_JOB_COMPLETED,
+                    JobCompletedParams {
+                        job_id: job_id.clone(),
+                        uri: uri.to_string(),
+                        success: true,
+                        error: None,
+                        pending_id: pending_id.clone(),
+                    },
                 );
+
+                // Complete the job
+                job_tracker.complete_job(&uri, &job_id);
             }
             Err(e) => {
                 error!("Backend error: {}", e);
@@ -412,11 +524,23 @@ fn spawn_implementation_worker(
                         output_path_str
                     );
                 }
+
+                // Send job completed notification with error
+                let _ = lsp_client.send_notification(
+                    NOTIFICATION_JOB_COMPLETED,
+                    JobCompletedParams {
+                        job_id: job_id.clone(),
+                        uri: uri.to_string(),
+                        success: false,
+                        error: Some(format!("Backend error: {}", e)),
+                        pending_id: pending_id.clone(),
+                    },
+                );
+
+                // Complete the job
+                job_tracker.complete_job(&uri, &job_id);
             }
         }
-
-        // Release the slot so the next job can proceed
-        job_queue.release(&uri, &job_id);
     });
 }
 

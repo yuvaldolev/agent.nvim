@@ -13,10 +13,12 @@ agent.nvim provides a seamless integration between Neovim and the Amp AI coding 
 
 - **`:AmpImplementFunction`** — Implement the function at the cursor position using AI
 - **Streaming progress** — See incremental AI output as ghost text while the implementation is being generated
-- **Concurrent implementations** — Implement multiple functions simultaneously with per-file serialization
-- Animated spinner feedback while waiting for AI response (supports multiple concurrent spinners)
-- Automatic code insertion via LSP workspace edits with line tracking
-- **3-way merge** — Smart merging of AI-generated code with user edits to prevent conflicts
+- **Multiple parallel implementations** — Implement up to 10 functions simultaneously in the same file
+- **Live updates** — Each implementation applies immediately when complete, no waiting for all jobs
+- **Multiple ghost text displays** — Independent spinners and previews for each concurrent implementation
+- **Automatic line tracking** — Ghost text follows the function as other implementations shift lines
+- **Smart function replacement** — Always uses latest agent output, preserving other functions in the file
+- Animated spinner feedback with 120-second timeout per job
 - Language-agnostic design (works with any programming language)
 
 ## Requirements
@@ -69,7 +71,29 @@ require("agent_amp").setup({
 })
 ```
 
+### Backend Configuration
+
+The LSP server supports multiple AI backends. Configure the backend in `src/config.rs`:
+
+```rust
+// Use OpenCode backend (default)
+pub const CURRENT_BACKEND: BackendType = BackendType::OpenCode;
+
+// Or use Amp backend
+pub const CURRENT_BACKEND: BackendType = BackendType::Amp;
+
+// Configure temporary file cleanup
+pub const DELETE_TEMP_FILES: bool = true;  // false to preserve for debugging
+
+// Maximum concurrent implementations per file
+pub const MAX_CONCURRENT_JOBS_PER_FILE: usize = 10;
+```
+
+After changing configuration, rebuild with `cargo build --release`.
+
 ## Usage
+
+### Basic Usage
 
 1. Open a file in Neovim
 2. Position your cursor on a function with `todo!()` or similar placeholder
@@ -88,7 +112,41 @@ Or create a custom keybinding:
 vim.keymap.set("n", "<leader>ai", require("agent_amp").implement_function, { desc = "Implement function with Amp" })
 ```
 
+### Concurrent Implementations
+
+agent.nvim supports implementing multiple functions simultaneously in the same file:
+
+1. **Trigger multiple implementations**: Run `:AmpImplementFunction` on different functions without waiting
+2. **Visual feedback**: Each function gets its own spinner and ghost text preview
+3. **Live updates**: Implementations apply as soon as they complete
+4. **Automatic line tracking**: Spinners automatically move when other implementations shift line numbers
+5. **Limit**: Up to 10 concurrent implementations per file
+
+**Example workflow:**
+
+```
+File: math.rs
+──────────────────
+fn add(a: i32, b: i32) -> i32 {     ← Run :AmpImplementFunction here
+    todo!()
+}
+
+fn subtract(a: i32, b: i32) -> i32 { ← Run :AmpImplementFunction here
+    todo!()
+}
+
+fn multiply(a: i32, b: i32) -> i32 { ← Run :AmpImplementFunction here
+    todo!()
+}
+──────────────────
+
+Result: All three functions are implemented concurrently, each with its own spinner.
+As each completes, it's applied immediately and other spinners adjust their positions.
+```
+
 ## Running Tests
+
+### Rust Tests
 
 ```bash
 # Run all tests
@@ -100,11 +158,24 @@ cargo test --test e2e_test
 # Run a specific test
 cargo test test_initialization
 
-# Run ignored tests (require amp CLI to be available)
+# Run ignored tests (require amp/opencode CLI to be available)
 cargo test --test e2e_test -- --ignored --nocapture
 ```
 
+### Lua Tests
+
+```bash
+# Run all plugin tests
+./nvim-plugin/tests/run_tests.sh
+
+# Run specific test suite
+lua nvim-plugin/tests/spinner_spec.lua
+lua nvim-plugin/tests/init_spec.lua
+```
+
 ### Test Coverage
+
+**Rust Tests:**
 
 | Test | Description |
 |------|-------------|
@@ -113,9 +184,18 @@ cargo test --test e2e_test -- --ignored --nocapture
 | `test_did_change` | Tests incremental document sync with text edits |
 | `test_completion_returns_null` | Verifies completion stub returns null |
 | `test_unknown_request_returns_error` | Verifies unknown methods return MethodNotFound error |
-| `test_execute_command_prints_modifications` | *(ignored)* Calls amp CLI and prints workspace edits |
+| `test_max_concurrent_jobs_limit` | Verifies max 10 concurrent jobs per file |
+| `test_execute_command_prints_modifications` | *(ignored)* Calls CLI and prints workspace edits |
 | `test_single_function_modification` | *(ignored)* Verifies targeted function modification |
-| `test_concurrent_implementations` | *(ignored)* Tests concurrent function implementations across multiple files |
+| `test_concurrent_implementations` | *(ignored)* Tests concurrent implementations across multiple files |
+| `test_concurrent_same_file_implementations` | *(ignored)* Tests multiple concurrent implementations in same file |
+
+**Lua Tests (28 tests):**
+
+| Test Suite | Tests | Description |
+|------------|-------|-------------|
+| `spinner_spec.lua` | 15 | SpinnerManager operations, line tracking, concurrent spinners |
+| `init_spec.lua` | 13 | Job completion, progress handling, concurrent workflow simulation |
 
 ## Architecture
 
@@ -125,28 +205,41 @@ sequenceDiagram
     participant Neovim
     participant Plugin as nvim-plugin
     participant LSP as agent-lsp
-    participant Amp as Amp CLI
+    participant Backend as Backend CLI
 
     User->>Neovim: :AmpImplementFunction
     Neovim->>Plugin: implement_function()
     Plugin->>LSP: textDocument/codeAction
     LSP-->>Plugin: CodeAction (amp.implFunction)
-    Plugin->>Plugin: Start spinner
+    Plugin->>Plugin: Start pending spinner
     Plugin->>LSP: workspace/executeCommand
-    LSP->>Disk: Create Temp File
-    LSP->>Amp: amp --execute "..." (output_to_file)
-    loop Streaming
-        Amp-->>LSP: Status updates (ghost text)
-        LSP->>Plugin: amp/implFunctionProgress
-        Plugin->>Plugin: Update ghost text preview
+    LSP->>LSP: Check job limit (max 10/file)
+    LSP->>LSP: Register job in JobTracker
+    LSP->>LSP: Spawn worker thread (non-blocking)
+    LSP-->>Plugin: Success (null)
+    
+    par Worker Thread
+        LSP->>Backend: Run CLI with prompt and output path
+        loop Streaming
+            Backend-->>LSP: Progress updates
+            LSP->>Plugin: amp/implFunctionProgress (with job_id)
+            Plugin->>Plugin: Transition pending→server spinner
+            Plugin->>Plugin: Update ghost text preview
+        end
+        Backend->>Disk: Write implementation to temp file
+        LSP->>Disk: Read implementation
+        LSP->>LSP: Replace function in current document
+        LSP->>LSP: Adjust other jobs' line numbers
+        LSP->>Plugin: amp/implFunctionProgress (line updates to other jobs)
+        Plugin->>Plugin: Update spinner positions
+        LSP->>Plugin: workspace/applyEdit
+        Plugin->>Neovim: Apply text edits
+        LSP->>Plugin: amp/jobCompleted (success)
+        Plugin->>Plugin: Stop spinner
+        LSP->>LSP: Complete job in JobTracker
     end
-    Amp->>Disk: Write implementation
-    LSP->>Disk: Read implementation
-    LSP->>LSP: 3-way Merge (Base, Yours, Theirs)
-    LSP->>Plugin: workspace/applyEdit
-    Plugin->>Plugin: Stop spinner
-    Plugin->>Neovim: Apply text edits
-    Neovim-->>User: Code inserted
+    
+    Neovim-->>User: Code inserted (live, per job)
 ```
 
 ### Component Design
@@ -160,17 +253,22 @@ src/
 ├── main.rs           # Server struct, initialization, message loop
 ├── handlers.rs       # Request and notification handlers
 ├── document_store.rs # In-memory document tracking
-├── job_queue.rs      # Per-file job serialization with line tracking
+├── job_tracker.rs    # Concurrent job tracking with line adjustments
+├── backend.rs        # Backend trait for AI provider abstraction
 ├── amp.rs            # Amp CLI integration
+├── opencode.rs       # OpenCode CLI integration
+├── config.rs         # Backend selection and configuration
 └── lsp_utils.rs      # LSP response helpers and workspace edit builder
 ```
 
 **Key Design Decisions:**
 
-- **Language agnostic**: The server does not parse code. It passes cursor position and file contents to the Amp CLI, which determines function context.
+- **Language agnostic**: The server does not parse code. It passes cursor position and file contents to the AI backend, which determines function context.
 - **Incremental sync**: Uses `TextDocumentSyncKind::INCREMENTAL` for efficient document updates.
-- **Per-file serialization**: Uses `JobQueue` to serialize concurrent implementations within the same file, preventing race conditions when line numbers shift.
-- **Line tracking**: Pending jobs have their line numbers automatically adjusted when earlier implementations are applied.
+- **Parallel execution**: Up to 10 concurrent implementations per file, with automatic line tracking.
+- **Line tracking**: Active jobs have their line numbers automatically adjusted when other implementations complete.
+- **Function-only replacement**: Always uses latest agent output for the specific function, preserving everything else.
+- **Per-job timeout**: Each implementation has a 120-second timeout (configurable in plugin).
 - **Versioned edits**: `WorkspaceEdit` includes `VersionedTextDocumentIdentifier` for concurrency safety.
 - **Logging**: Uses `tracing` crate, outputting to stderr (required since stdio is used for LSP transport).
 
@@ -182,8 +280,9 @@ src/
 | `textDocument/didChange` | Incremental sync to DocumentStore |
 | `textDocument/completion` | Stub (returns null) |
 | `textDocument/codeAction` | Returns "Implement function with Amp" action |
-| `workspace/executeCommand` | Handles `amp.implFunction`, calls Amp CLI |
-| `amp/implFunctionProgress` | Server-to-client notification with streaming preview text |
+| `workspace/executeCommand` | Handles `amp.implFunction`, spawns concurrent workers |
+| `amp/implFunctionProgress` | Server-to-client notification with streaming preview and line updates |
+| `amp/jobCompleted` | Server-to-client notification when job finishes (success/error) |
 
 #### Neovim Plugin (`nvim-plugin/`)
 
@@ -203,9 +302,9 @@ nvim-plugin/
 
 | Module | Description |
 |--------|-------------|
-| `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AmpImplementFunction` command, handles progress callbacks |
-| `lsp.lua` | `LspClient` class. Manages LSP lifecycle, automatic binary resolution, handles `workspace/applyEdit` and `amp/implFunctionProgress` notifications |
-| `spinner.lua` | `SpinnerManager` class. Manages multiple concurrent spinners with job tracking, 40s timeout and ghost text preview support |
+| `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AmpImplementFunction` command, handles progress and job completion callbacks |
+| `lsp.lua` | `LspClient` class. Manages LSP lifecycle, automatic binary resolution, handles `workspace/applyEdit`, `amp/implFunctionProgress`, and `amp/jobCompleted` notifications |
+| `spinner.lua` | `SpinnerManager` class. Manages multiple concurrent spinners with job tracking, 120s timeout per job, line updates, and ghost text preview support |
 
 **Binary Resolution (`lsp.lua`):**
 
@@ -227,8 +326,9 @@ flowchart LR
     subgraph LSP["agent-lsp"]
         E[main.rs] --> F[handlers.rs]
         F --> G[document_store.rs]
-        F --> K[job_queue.rs]
-        F --> H[amp.rs]
+        F --> K[job_tracker.rs]
+        F --> L[backend.rs]
+        L --> H[amp.rs / opencode.rs]
         F --> I[lsp_utils.rs]
     end
     

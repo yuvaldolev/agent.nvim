@@ -3,7 +3,7 @@ mod backend;
 mod config;
 mod document_store;
 mod handlers;
-mod job_queue;
+mod job_tracker;
 mod lsp_utils;
 mod opencode;
 mod utils;
@@ -22,12 +22,12 @@ use tracing_subscriber::FmtSubscriber;
 
 use crate::document_store::DocumentStore;
 use crate::handlers::{NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION};
-use crate::job_queue::JobQueue;
+use crate::job_tracker::JobTracker;
 
 struct Server {
     connection: Connection,
     document_store: Arc<DocumentStore>,
-    job_queue: Arc<JobQueue>,
+    job_tracker: Arc<JobTracker>,
 }
 
 impl Server {
@@ -35,7 +35,7 @@ impl Server {
         Self {
             connection,
             document_store: Arc::new(DocumentStore::new()),
-            job_queue: Arc::new(JobQueue::new()),
+            job_tracker: Arc::new(JobTracker::new()),
         }
     }
 
@@ -83,7 +83,7 @@ impl Server {
                     let handler = RequestHandler::new(
                         &self.connection,
                         self.document_store.clone(),
-                        self.job_queue.clone(),
+                        self.job_tracker.clone(),
                     );
                     handler.handle(&req)?;
                 }

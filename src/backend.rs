@@ -26,6 +26,9 @@ pub trait Backend: Send + Sync {
     /// The `on_progress` callback is called with intermediate results/status
     /// as the implementation is being generated.
     ///
+    /// The `function_signature` parameter provides the exact function signature to implement,
+    /// helping disambiguate when multiple functions exist in the file.
+    ///
     /// The final implementation code should be written to `output_path`.
     fn implement_function_streaming(
         &self,
@@ -35,6 +38,7 @@ pub trait Backend: Send + Sync {
         language_id: &str,
         file_contents: &str,
         output_path: &str,
+        function_signature: &str,
         on_progress: Box<dyn FnMut(&str) + Send>,
     ) -> Result<(), Box<dyn Error + Sync + Send>>;
 }

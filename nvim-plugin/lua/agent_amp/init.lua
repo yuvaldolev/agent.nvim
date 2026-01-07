@@ -19,66 +19,48 @@ function AgentAmp.new(opts)
         on_progress = function(params)
             self:_on_progress(params)
         end,
+        on_job_completed = function(params)
+            self:_on_job_completed(params)
+        end,
     })
     return self
 end
 
-function AgentAmp:_on_apply_edit(_err, result, _ctx)
-    if not result or not result.edit then
+function AgentAmp:_on_apply_edit(_err, _result, _ctx)
+    -- Spinner cleanup is now handled by _on_job_completed notification.
+    -- This handler just lets the LSP apply the edit via the default handler.
+    -- We keep this method for potential future use (e.g., logging, metrics).
+end
+
+function AgentAmp:_on_job_completed(params)
+    if not params or not params.job_id then
         return
     end
 
-    local edit = result.edit
-    local document_changes = edit.documentChanges or {}
+    local job_id = params.job_id
 
-    for _, change in ipairs(document_changes) do
-        if change.textDocument and change.textDocument.uri then
-            local uri = change.textDocument.uri
-            for _, text_edit in ipairs(change.edits or {}) do
-                local line = text_edit.range and text_edit.range.start and text_edit.range.start.line
-                if line then
-                    -- First try exact line match
-                    local job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
-                    
-                    -- If no match and this is a full-file edit (starts at line 0), find any job for this URI
-                    if not job_id and line == 0 then
-                        job_id = self.spinner_manager:find_any_job_by_uri(uri)
-                    end
-                    
-                    if job_id then
-                        self.spinner_manager:stop(job_id)
-                        vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
-                        return
-                    end
-                end
+    -- Stop the spinner for this job
+    self.spinner_manager:stop(job_id)
+
+    -- Clean up pending job using pending_id if available (direct match)
+    if params.pending_id and self.pending_jobs[params.pending_id] then
+        self.pending_jobs[params.pending_id] = nil
+    else
+        -- Fall back to searching by server_job_id
+        for pending_id, pending_info in pairs(self.pending_jobs) do
+            if pending_info.server_job_id == job_id then
+                self.pending_jobs[pending_id] = nil
+                break
             end
         end
     end
 
-    local changes = edit.changes or {}
-    for uri, edits in pairs(changes) do
-        for _, text_edit in ipairs(edits) do
-            local line = text_edit.range and text_edit.range.start and text_edit.range.start.line
-            if line then
-                -- First try exact line match
-                local job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
-                
-                -- If no match and this is a full-file edit (starts at line 0), find any job for this URI
-                if not job_id and line == 0 then
-                    job_id = self.spinner_manager:find_any_job_by_uri(uri)
-                end
-                
-                if job_id then
-                    self.spinner_manager:stop(job_id)
-                    vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
-                    return
-                end
-            end
-        end
-    end
-
-    if self.spinner_manager:has_running() then
+    -- Show notification based on success/failure
+    if params.success then
         vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
+    else
+        local msg = params.error or "Implementation failed"
+        vim.notify("[AgentAmp] " .. msg, vim.log.levels.ERROR)
     end
 end
 
@@ -91,9 +73,59 @@ function AgentAmp:_on_progress(params)
     local uri = params.uri
     local line = params.line
 
+    -- Check if this is a new job that needs to replace a pending placeholder
     if not self.spinner_manager:is_running(server_job_id) then
-        local pending_job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+        local pending_job_id = nil
+
+        -- PRIORITY 1: Use pending_id from server for direct, unambiguous matching
+        if params.pending_id and self.pending_jobs[params.pending_id] then
+            pending_job_id = params.pending_id
+        end
+
+        -- PRIORITY 2: Fall back to line-based matching if no pending_id
+        if not pending_job_id then
+            -- Find any pending job at the original line or nearby
+            pending_job_id = self.spinner_manager:find_job_by_uri_line(uri, line)
+
+            -- Only accept the primary match if it's actually a pending job
+            -- (find_job_by_uri_line can return already-transitioned server jobs too)
+            if pending_job_id and not pending_job_id:match("^pending%-") then
+                pending_job_id = nil
+            end
+
+            -- If no pending match found, find the pending job with the closest line number
+            if not pending_job_id then
+                local best_match = nil
+                local best_line_diff = math.huge
+
+                for pid, pinfo in pairs(self.pending_jobs) do
+                    if pid:match("^pending%-") then
+                        local bufnr = pinfo.bufnr
+                        if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+                            local buf_uri = vim.uri_from_bufnr(bufnr)
+                            if buf_uri == uri then
+                                -- Find the pending job with the closest line number
+                                local line_diff = math.abs(pinfo.line - line)
+                                if line_diff < best_line_diff then
+                                    best_line_diff = line_diff
+                                    best_match = pid
+                                end
+                            end
+                        end
+                    end
+                end
+
+                pending_job_id = best_match
+            end
+        end
+
         if pending_job_id and pending_job_id:match("^pending%-") then
+            -- Store the mapping from pending to server job_id
+            local pending_info = self.pending_jobs[pending_job_id]
+            if pending_info then
+                pending_info.server_job_id = server_job_id
+            end
+
             self.spinner_manager:stop(pending_job_id)
             self.pending_jobs[pending_job_id] = nil
 
@@ -104,6 +136,10 @@ function AgentAmp:_on_progress(params)
         end
     end
 
+    -- Update line position if it changed (due to other job completing)
+    self.spinner_manager:update_job_line(server_job_id, line)
+
+    -- Update preview text
     if params.preview then
         self.spinner_manager:set_preview(server_job_id, params.preview)
     end
@@ -147,6 +183,10 @@ function AgentAmp:implement_function()
             bufnr = bufnr,
             line = line,
         }
+
+        -- Add pending job ID as 6th argument so server can correlate responses
+        amp_action.arguments = amp_action.arguments or {}
+        table.insert(amp_action.arguments, job_id)
 
         self.spinner_manager:start(job_id, bufnr, line)
         self.lsp_client:execute_command(bufnr, amp_action)

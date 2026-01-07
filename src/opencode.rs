@@ -46,10 +46,13 @@ fn build_prompt(
     language_id: &str,
     file_contents: &str,
     output_path: &str,
+    function_signature: &str,
 ) -> String {
     format!(
         "Implement the function body at line {}, character {} in the following file. \
-         Write ONLY the function implementation (signature and body) to the file: {} \
+         The function to implement is: `{}`\n\n\
+         IMPORTANT: Implement ONLY the function `{}` - do NOT implement any other functions in the file.\n\n\
+         Write ONLY this function's implementation (signature and body) to the file: {} \
          Do NOT include any other code from the source file (no imports, no other functions). \
          Do NOT output the code to stdout. \
          Output only status messages or confirmation.\n\n<FILE-CONTENT>\n{}</FILE-CONTENT> \n\n\
@@ -60,6 +63,8 @@ Describe your steps before performing them.\n\
          ",
         line + 1,
         character + 1,
+        function_signature,
+        function_signature,
         output_path,
         file_contents
     )
@@ -93,8 +98,8 @@ impl Backend for OpenCodeClient {
             file_path, line, character, language_id
         );
 
-        // NOTE: implement_function is deprecated in favor of streaming, passing dummy path
-        let prompt = build_prompt(line, character, language_id, file_contents, "/tmp/dummy");
+        // NOTE: implement_function is deprecated in favor of streaming, passing dummy path and signature
+        let prompt = build_prompt(line, character, language_id, file_contents, "/tmp/dummy", "unknown");
 
         let output = Command::new("opencode")
             .arg("run")
@@ -129,14 +134,15 @@ impl Backend for OpenCodeClient {
         language_id: &str,
         file_contents: &str,
         output_path: &str,
+        function_signature: &str,
         mut on_progress: Box<dyn FnMut(&str) + Send>,
     ) -> Result<(), Box<dyn Error + Sync + Send>> {
         info!(
-            "Calling opencode CLI (streaming) - file: {}, line: {}, character: {}, language: {}",
-            file_path, line, character, language_id
+            "Calling opencode CLI (streaming) - file: {}, line: {}, character: {}, language: {}, function: {}",
+            file_path, line, character, language_id, function_signature
         );
 
-        let prompt = build_prompt(line, character, language_id, file_contents, output_path);
+        let prompt = build_prompt(line, character, language_id, file_contents, output_path, function_signature);
 
         let mut child = Command::new("opencode")
             .arg("run")
@@ -145,7 +151,8 @@ impl Backend for OpenCodeClient {
             // .arg("--attach")
             // .arg("http://localhost:1337")
             .arg("--model")
-            .arg("opencode/claude-sonnet-4-5")
+            .arg("anthropic/claude-sonnet-4-5")
+            // .arg("opencode/claude-sonnet-4-5")
             .arg(&prompt)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -153,6 +160,7 @@ impl Backend for OpenCodeClient {
             .spawn()?;
 
         let stdout = child.stdout.take().ok_or("Failed to capture stdout")?;
+        let stderr = child.stderr.take().ok_or("Failed to capture stderr")?;
         let reader = BufReader::new(stdout);
 
         let mut accumulated_text = String::new();
@@ -173,7 +181,20 @@ impl Backend for OpenCodeClient {
 
         let status = child.wait()?;
         if !status.success() {
-            return Err(format!("opencode CLI failed: {}", accumulated_text).into());
+            // Read stderr for error details
+            let mut stderr_reader = BufReader::new(stderr);
+            let mut stderr_content = String::new();
+            let _ = std::io::Read::read_to_string(&mut stderr_reader, &mut stderr_content);
+
+            let error_details = if !stderr_content.trim().is_empty() {
+                stderr_content.trim().to_string()
+            } else if !accumulated_text.trim().is_empty() {
+                accumulated_text.trim().to_string()
+            } else {
+                format!("exit code: {:?}", status.code())
+            };
+
+            return Err(format!("opencode CLI failed: {}", error_details).into());
         }
 
         info!("OpenCode CLI finished successfully");
@@ -279,11 +300,13 @@ mod tests {
 
     #[test]
     fn test_build_prompt() {
-        let prompt = build_prompt(9, 4, "rust", "fn main() {}", "/tmp/output.rs");
+        let prompt = build_prompt(9, 4, "rust", "fn main() {}", "/tmp/output.rs", "fn foo()");
         assert!(prompt.contains("line 10"));
         assert!(prompt.contains("character 5"));
         // assert!(prompt.contains("rust"));
         assert!(prompt.contains("fn main() {}"));
         assert!(prompt.contains("/tmp/output.rs"));
+        assert!(prompt.contains("fn foo()"));
+        assert!(prompt.contains("IMPORTANT: Implement ONLY the function"));
     }
 }

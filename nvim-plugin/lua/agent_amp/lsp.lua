@@ -33,6 +33,7 @@ function LspClient.new(opts)
     self.client_id = nil
     self.on_apply_edit = opts.on_apply_edit
     self.on_progress = opts.on_progress
+    self.on_job_completed = opts.on_job_completed
     return self
 end
 
@@ -74,6 +75,11 @@ function LspClient:_create_client_config()
             ["amp/implFunctionProgress"] = function(_err, params, _ctx)
                 if self.on_progress then
                     self.on_progress(params)
+                end
+            end,
+            ["amp/jobCompleted"] = function(_err, params, _ctx)
+                if self.on_job_completed then
+                    self.on_job_completed(params)
                 end
             end,
         },

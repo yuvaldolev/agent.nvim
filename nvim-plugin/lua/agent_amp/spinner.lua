@@ -3,7 +3,7 @@ Spinner.__index = Spinner
 
 local FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local INTERVAL_MS = 80
-local TIMEOUT_MS = 40000
+local TIMEOUT_MS = 120000
 
 function Spinner.new(ns_id)
     local self = setmetatable({}, Spinner)
@@ -70,6 +70,18 @@ function Spinner:set_preview(text)
         return
     end
     self.preview_lines = vim.split(text, "\n", { plain = true })
+end
+
+function Spinner:update_line(new_line)
+    if self.line == new_line then
+        return
+    end
+    self.line = new_line
+    -- Extmark will be repositioned on next _update() tick
+end
+
+function Spinner:get_line()
+    return self.line
 end
 
 function Spinner:_update()
@@ -161,6 +173,21 @@ function SpinnerManager:set_preview(job_id, text)
     if spinner and spinner:is_running() then
         spinner:set_preview(text)
     end
+end
+
+function SpinnerManager:update_job_line(job_id, new_line)
+    local spinner = self.spinners[job_id]
+    if spinner and spinner:is_running() then
+        spinner:update_line(new_line)
+    end
+end
+
+function SpinnerManager:get_job_line(job_id)
+    local spinner = self.spinners[job_id]
+    if spinner and spinner:is_running() then
+        return spinner:get_line()
+    end
+    return nil
 end
 
 function SpinnerManager:find_job_by_uri_line(uri, line)

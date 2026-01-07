@@ -997,3 +997,340 @@ fn subtract(a: i32, b: i32) -> i32 {
 
     client.shutdown();
 }
+
+#[test]
+#[ignore]
+fn test_concurrent_same_file_implementations() {
+    use std::collections::HashMap;
+
+    let mut client = LspClient::spawn();
+    client.initialize();
+
+    let test_uri = "file:///tmp/test_same_file_concurrent.rs";
+    let test_content = r#"fn add(a: i32, b: i32) -> i32 {
+    todo!()
+}
+
+fn subtract(a: i32, b: i32) -> i32 {
+    todo!()
+}
+
+fn multiply(a: i32, b: i32) -> i32 {
+    todo!()
+}
+"#;
+
+    client.send_notification(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": test_uri,
+                "languageId": "rust",
+                "version": 1,
+                "text": test_content
+            }
+        }),
+    );
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    println!("\n=== Testing Concurrent Same-File Implementations ===");
+    println!("Sending 3 concurrent implementation requests for the same file");
+
+    // Send 3 concurrent requests for different functions in the same file
+    let req_id_1 = client.send_request_async(
+        "workspace/executeCommand",
+        json!({
+            "command": "amp.implFunction",
+            "arguments": [test_uri, 0, 0, 1, "rust"] // add function at line 0
+        }),
+    );
+
+    let req_id_2 = client.send_request_async(
+        "workspace/executeCommand",
+        json!({
+            "command": "amp.implFunction",
+            "arguments": [test_uri, 4, 0, 1, "rust"] // subtract function at line 4
+        }),
+    );
+
+    let req_id_3 = client.send_request_async(
+        "workspace/executeCommand",
+        json!({
+            "command": "amp.implFunction",
+            "arguments": [test_uri, 8, 0, 1, "rust"] // multiply function at line 8
+        }),
+    );
+
+    println!(
+        "Sent requests with IDs: {}, {}, {}",
+        req_id_1, req_id_2, req_id_3
+    );
+
+    // Collect messages for up to 90 seconds (3 jobs * 30 seconds each, but they run in parallel)
+    let messages = client.collect_messages(Duration::from_secs(90));
+
+    println!("\n=== Collected {} messages ===", messages.len());
+
+    let mut responses: HashMap<i32, Value> = HashMap::new();
+    let mut progress_notifications: Vec<Value> = Vec::new();
+    let mut apply_edits: Vec<Value> = Vec::new();
+    let mut job_completed_notifications: Vec<Value> = Vec::new();
+
+    for msg in &messages {
+        if let Some(id) = msg.get("id") {
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                if let Some(id_num) = id.as_i64() {
+                    responses.insert(id_num as i32, msg.clone());
+                }
+            } else if msg.get("method").map(|m| m.as_str()) == Some(Some("workspace/applyEdit")) {
+                apply_edits.push(msg.clone());
+            }
+        } else if let Some(method) = msg.get("method") {
+            match method.as_str() {
+                Some("amp/implFunctionProgress") => {
+                    progress_notifications.push(msg.clone());
+                }
+                Some("amp/jobCompleted") => {
+                    job_completed_notifications.push(msg.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    println!("\n=== Responses ===");
+    for (id, resp) in &responses {
+        println!(
+            "Request {}: {}",
+            id,
+            if resp.get("result").is_some() {
+                "success"
+            } else {
+                "error"
+            }
+        );
+    }
+
+    // All 3 commands should return success immediately (non-blocking)
+    assert!(
+        responses.contains_key(&req_id_1),
+        "Missing response for request {}",
+        req_id_1
+    );
+    assert!(
+        responses.contains_key(&req_id_2),
+        "Missing response for request {}",
+        req_id_2
+    );
+    assert!(
+        responses.contains_key(&req_id_3),
+        "Missing response for request {}",
+        req_id_3
+    );
+
+    for (id, resp) in &responses {
+        assert!(
+            resp.get("result").is_some(),
+            "Request {} should return success, got error: {:?}",
+            id,
+            resp.get("error")
+        );
+    }
+    println!("✓ All 3 commands returned success immediately (non-blocking)");
+
+    println!("\n=== Job Completed Notifications ===");
+    println!(
+        "Received {} job completed notifications",
+        job_completed_notifications.len()
+    );
+
+    let mut successful_jobs = 0;
+    for notif in &job_completed_notifications {
+        if let Some(params) = notif.get("params") {
+            if let Some(success) = params.get("success").and_then(|s| s.as_bool()) {
+                if success {
+                    successful_jobs += 1;
+                    if let Some(job_id) = params.get("job_id").and_then(|j| j.as_str()) {
+                        println!(
+                            "  ✓ Job {} completed successfully",
+                            &job_id[..8.min(job_id.len())]
+                        );
+                    }
+                } else {
+                    if let Some(error) = params.get("error").and_then(|e| e.as_str()) {
+                        println!("  ✗ Job failed: {}", error);
+                    }
+                }
+            }
+        }
+    }
+
+    println!("\n=== Workspace Apply Edits ===");
+    println!(
+        "Received {} workspace/applyEdit requests",
+        apply_edits.len()
+    );
+
+    if apply_edits.len() >= 3 {
+        println!("✓ All 3 jobs completed and sent apply edits");
+    } else {
+        println!(
+            "⚠ Only {} apply edits received (expected 3)",
+            apply_edits.len()
+        );
+    }
+
+    println!("\n=== Test Summary ===");
+    println!("Responses: {}/3", responses.len());
+    println!("Progress notifications: {}", progress_notifications.len());
+    println!(
+        "Job completed: {}/{}",
+        successful_jobs,
+        job_completed_notifications.len()
+    );
+    println!("Apply edits: {}/3", apply_edits.len());
+
+    let stderr = client.drain_stderr();
+    if !stderr.is_empty() {
+        println!("\n=== Server Stderr (last 2000 chars) ===");
+        let stderr_tail: String = stderr
+            .chars()
+            .rev()
+            .take(2000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        println!("{}", stderr_tail);
+    }
+
+    client.shutdown();
+}
+
+#[test]
+fn test_max_concurrent_jobs_limit() {
+    use std::collections::HashMap;
+
+    let mut client = LspClient::spawn();
+    client.initialize();
+
+    let test_uri = "file:///tmp/test_max_jobs.rs";
+
+    // Create a file with 12 functions
+    let mut test_content = String::new();
+    for i in 0..12 {
+        test_content.push_str(&format!("fn func_{}() {{\n    todo!()\n}}\n\n", i));
+    }
+
+    client.send_notification(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": test_uri,
+                "languageId": "rust",
+                "version": 1,
+                "text": test_content
+            }
+        }),
+    );
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    println!("\n=== Testing Max Concurrent Jobs Limit ===");
+    println!("Attempting to start 12 concurrent implementations (limit is 10)");
+
+    let mut request_ids = Vec::new();
+
+    // Try to send 12 concurrent requests
+    for i in 0..12 {
+        let line = i * 4; // Each function is at line i*4
+        let req_id = client.send_request_async(
+            "workspace/executeCommand",
+            json!({
+                "command": "amp.implFunction",
+                "arguments": [test_uri, line, 0, 1, "rust"]
+            }),
+        );
+        request_ids.push(req_id);
+        // Small delay to ensure order
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    println!("Sent {} requests", request_ids.len());
+
+    // Collect responses (should be quick since they return immediately)
+    let messages = client.collect_messages(Duration::from_secs(5));
+
+    let mut responses: HashMap<i32, Value> = HashMap::new();
+    for msg in &messages {
+        if let Some(id) = msg.get("id") {
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                if let Some(id_num) = id.as_i64() {
+                    responses.insert(id_num as i32, msg.clone());
+                }
+            }
+        }
+    }
+
+    println!("\n=== Response Analysis ===");
+
+    let mut success_count = 0;
+    let mut error_count = 0;
+    let mut max_limit_errors = 0;
+
+    for req_id in &request_ids {
+        if let Some(resp) = responses.get(req_id) {
+            if resp.get("result").is_some() {
+                success_count += 1;
+            } else if let Some(error) = resp.get("error") {
+                error_count += 1;
+                if let Some(message) = error.get("message").and_then(|m| m.as_str()) {
+                    if message.contains("Maximum concurrent implementations") {
+                        max_limit_errors += 1;
+                        println!("  Request {}: Max limit error (expected)", req_id);
+                    } else {
+                        println!("  Request {}: Other error: {}", req_id, message);
+                    }
+                }
+            }
+        } else {
+            println!("  Request {}: No response", req_id);
+        }
+    }
+
+    println!("\n=== Results ===");
+    println!("Success: {}", success_count);
+    println!("Errors: {}", error_count);
+    println!("Max limit errors: {}", max_limit_errors);
+
+    // We expect first 10 to succeed, last 2 to fail with max limit error
+    assert!(
+        success_count <= 10,
+        "Expected at most 10 successful requests, got {}",
+        success_count
+    );
+    assert!(
+        max_limit_errors >= 2,
+        "Expected at least 2 max limit errors (for requests 11-12), got {}",
+        max_limit_errors
+    );
+
+    println!("✓ Max concurrent jobs limit is enforced correctly");
+
+    let stderr = client.drain_stderr();
+    if !stderr.is_empty() {
+        println!("\n=== Server Stderr (last 1000 chars) ===");
+        let stderr_tail: String = stderr
+            .chars()
+            .rev()
+            .take(1000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        println!("{}", stderr_tail);
+    }
+
+    client.shutdown();
+}
