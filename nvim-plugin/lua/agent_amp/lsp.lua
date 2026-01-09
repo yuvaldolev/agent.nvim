@@ -34,6 +34,7 @@ function LspClient.new(opts)
     self.on_apply_edit = opts.on_apply_edit
     self.on_progress = opts.on_progress
     self.on_job_completed = opts.on_job_completed
+    self.on_backend_info = opts.on_backend_info
     return self
 end
 
@@ -80,6 +81,11 @@ function LspClient:_create_client_config()
             ["agent/jobCompleted"] = function(_err, params, _ctx)
                 if self.on_job_completed then
                     self.on_job_completed(params)
+                end
+            end,
+            ["agent/backendInfo"] = function(_err, params, _ctx)
+                if self.on_backend_info then
+                    self.on_backend_info(params)
                 end
             end,
         },

@@ -251,6 +251,36 @@ run_test("Line tracking across multiple updates", function()
     assert_equals(26, manager:get_job_line("job-c"))
 end)
 
+run_test("SpinnerManager:set_backend_name updates backend name", function()
+    local manager = SpinnerManager.new()
+    
+    -- Default backend name should be "Agent"
+    assert_equals("Agent", manager:get_backend_name())
+    
+    -- Update backend name
+    manager:set_backend_name("OpenCode")
+    assert_equals("OpenCode", manager:get_backend_name())
+    
+    -- Set to nil should fallback to default
+    manager:set_backend_name(nil)
+    assert_equals("Agent", manager:get_backend_name())
+end)
+
+run_test("SpinnerManager passes backend name to new spinners", function()
+    local manager = SpinnerManager.new()
+    
+    -- Set custom backend name
+    manager:set_backend_name("TestBackend")
+    
+    -- Start a spinner
+    manager:start("job-1", 1, 10)
+    
+    -- Verify the spinner has the correct backend name
+    local spinner = manager.spinners["job-1"]
+    assert_not_nil(spinner)
+    assert_equals("TestBackend", spinner.backend_name)
+end)
+
 -- Summary
 print("")
 print(string.format("Tests: %d passed, %d failed", tests_passed, tests_failed))

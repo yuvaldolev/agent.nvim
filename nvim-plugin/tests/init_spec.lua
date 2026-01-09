@@ -126,6 +126,7 @@ local function create_fresh_instance()
     package.loaded["agent_amp"] = nil
     
     local SpinnerManager = require("agent_amp.spinner")
+    local DEFAULT_BACKEND_NAME = "Agent"
     
     -- Create a test-friendly AgentAmp instance
     local AgentAmp = {}
@@ -135,10 +136,18 @@ local function create_fresh_instance()
         local self = setmetatable({}, AgentAmp)
         self.spinner_manager = SpinnerManager.new()
         self.pending_jobs = {}
+        self.backend_name = DEFAULT_BACKEND_NAME
         return self
     end
     
     -- Copy the actual methods from init.lua
+    function AgentAmp:_on_backend_info(params)
+        if params and params.name and params.name ~= "" then
+            self.backend_name = params.name
+            self.spinner_manager:set_backend_name(self.backend_name)
+        end
+    end
+    
     function AgentAmp:_on_job_completed(params)
         if not params or not params.job_id then
             return
@@ -155,10 +164,10 @@ local function create_fresh_instance()
         end
 
         if params.success then
-            vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
+            vim.notify("[" .. self.backend_name .. "] Implementation applied", vim.log.levels.INFO)
         else
             local msg = params.error or "Implementation failed"
-            vim.notify("[AgentAmp] " .. msg, vim.log.levels.ERROR)
+            vim.notify("[" .. self.backend_name .. "] " .. msg, vim.log.levels.ERROR)
         end
     end
     
@@ -469,6 +478,54 @@ run_test("Full concurrent workflow simulation", function()
         end
     end
     assert_equals(3, success_count, "Should have 3 success notifications")
+end)
+
+-- Tests for _on_backend_info
+
+run_test("_on_backend_info ignores nil params", function()
+    local agent = create_fresh_instance()
+    agent:_on_backend_info(nil)
+    assert_equals("Agent", agent.backend_name)
+end)
+
+run_test("_on_backend_info ignores params without name", function()
+    local agent = create_fresh_instance()
+    agent:_on_backend_info({})
+    assert_equals("Agent", agent.backend_name)
+end)
+
+run_test("_on_backend_info ignores empty name", function()
+    local agent = create_fresh_instance()
+    agent:_on_backend_info({ name = "" })
+    assert_equals("Agent", agent.backend_name)
+end)
+
+run_test("_on_backend_info sets backend name", function()
+    local agent = create_fresh_instance()
+    agent:_on_backend_info({ name = "OpenCode" })
+    assert_equals("OpenCode", agent.backend_name)
+end)
+
+run_test("_on_backend_info updates spinner manager backend name", function()
+    local agent = create_fresh_instance()
+    agent:_on_backend_info({ name = "TestBackend" })
+    assert_equals("TestBackend", agent.spinner_manager:get_backend_name())
+end)
+
+run_test("Notifications use dynamic backend name", function()
+    local agent = create_fresh_instance()
+    
+    -- Set custom backend name
+    agent:_on_backend_info({ name = "CustomBackend" })
+    
+    -- Start and complete a job
+    agent.spinner_manager:start("job-123", 1, 10)
+    agent:_on_job_completed({ job_id = "job-123", success = true })
+    
+    -- Notification should use custom backend name
+    assert_equals(1, #notifications)
+    assert_contains(notifications[1].msg, "[CustomBackend]")
+    assert_contains(notifications[1].msg, "Implementation applied")
 end)
 
 -- Summary

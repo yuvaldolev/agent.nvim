@@ -5,12 +5,14 @@ local AgentAmp = {}
 AgentAmp.__index = AgentAmp
 
 local instance = nil
+local DEFAULT_BACKEND_NAME = "Agent"
 
 function AgentAmp.new(opts)
     local self = setmetatable({}, AgentAmp)
     self.opts = opts or {}
     self.spinner_manager = SpinnerManager.new()
     self.pending_jobs = {}
+    self.backend_name = DEFAULT_BACKEND_NAME
     self.lsp_client = LspClient.new({
         cmd = self.opts.cmd,
         on_apply_edit = function(err, result, ctx)
@@ -22,6 +24,9 @@ function AgentAmp.new(opts)
         on_job_completed = function(params)
             self:_on_job_completed(params)
         end,
+        on_backend_info = function(params)
+            self:_on_backend_info(params)
+        end,
     })
     return self
 end
@@ -30,6 +35,14 @@ function AgentAmp:_on_apply_edit(_err, _result, _ctx)
     -- Spinner cleanup is now handled by _on_job_completed notification.
     -- This handler just lets the LSP apply the edit via the default handler.
     -- We keep this method for potential future use (e.g., logging, metrics).
+end
+
+function AgentAmp:_on_backend_info(params)
+    if params and params.name and params.name ~= "" then
+        self.backend_name = params.name
+        -- Update spinner manager with the new backend name
+        self.spinner_manager:set_backend_name(self.backend_name)
+    end
 end
 
 function AgentAmp:_on_job_completed(params)
@@ -57,10 +70,10 @@ function AgentAmp:_on_job_completed(params)
 
     -- Show notification based on success/failure
     if params.success then
-        vim.notify("[AgentAmp] Implementation applied", vim.log.levels.INFO)
+        vim.notify("[" .. self.backend_name .. "] Implementation applied", vim.log.levels.INFO)
     else
         local msg = params.error or "Implementation failed"
-        vim.notify("[AgentAmp] " .. msg, vim.log.levels.ERROR)
+        vim.notify("[" .. self.backend_name .. "] " .. msg, vim.log.levels.ERROR)
     end
 end
 
@@ -157,7 +170,7 @@ function AgentAmp:implement_function()
 
     self.lsp_client:request_code_actions(bufnr, function(actions)
         if not actions or #actions == 0 then
-            vim.notify("[AgentAmp] No code actions available at cursor", vim.log.levels.INFO)
+            vim.notify("[" .. self.backend_name .. "] No code actions available at cursor", vim.log.levels.INFO)
             return
         end
 
@@ -174,7 +187,7 @@ function AgentAmp:implement_function()
         end
 
         if not amp_action then
-            vim.notify("[AgentAmp] No 'Implement function with Amp' action found", vim.log.levels.INFO)
+            vim.notify("[" .. self.backend_name .. "] No 'Implement function' action found", vim.log.levels.INFO)
             return
         end
 
@@ -239,6 +252,13 @@ end
 
 function M.get_instance()
     return instance
+end
+
+function M.get_backend_name()
+    if instance then
+        return instance.backend_name
+    end
+    return DEFAULT_BACKEND_NAME
 end
 
 return M
