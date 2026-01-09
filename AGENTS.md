@@ -88,7 +88,7 @@ The server uses `lsp-server` crate (from rust-analyzer) with stdio transport and
 
 - `textDocument/didOpen`, `textDocument/didChange`: INCREMENTAL sync to DocumentStore
 - `textDocument/completion`: Stub (returns null)
-- `textDocument/codeAction`: Returns "Implement function with Amp" command
+- `textDocument/codeAction`: Returns "Implement function with AI agent" command
 - `workspace/executeCommand`: Handles `amp.implFunction`, spawns concurrent worker threads (non-blocking)
 - `amp/implFunctionProgress`: Server-to-client notification with streaming preview text and line updates (params: `job_id`, `uri`, `line`, `preview`)
 - `amp/jobCompleted`: Server-to-client notification when implementation finishes (params: `job_id`, `uri`, `success`, `error?`)
