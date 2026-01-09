@@ -1,5 +1,6 @@
 mod amp;
 mod backend;
+mod claude_code;
 mod config;
 mod document_store;
 mod handlers;
