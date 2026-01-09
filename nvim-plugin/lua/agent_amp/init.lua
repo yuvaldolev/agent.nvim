@@ -27,6 +27,9 @@ function AgentAmp.new(opts)
         on_backend_info = function(params)
             self:_on_backend_info(params)
         end,
+        get_backend_name = function()
+            return self.backend_name
+        end,
     })
     return self
 end
@@ -244,7 +247,7 @@ end
 
 function M.implement_function()
     if not instance then
-        vim.notify("[AgentAmp] Plugin not initialized. Call require('agent_amp').setup() first", vim.log.levels.ERROR)
+        vim.notify("[" .. DEFAULT_BACKEND_NAME .. "] Plugin not initialized. Call require('agent_amp').setup() first", vim.log.levels.ERROR)
         return
     end
     instance:implement_function()

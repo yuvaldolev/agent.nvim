@@ -1,6 +1,8 @@
 local LspClient = {}
 LspClient.__index = LspClient
 
+local DEFAULT_BACKEND_NAME = "Agent"
+
 local function get_plugin_root()
     local source = debug.getinfo(1, "S").source:sub(2)
     local plugin_lua_dir = vim.fn.fnamemodify(source, ":h:h:h")
@@ -35,7 +37,15 @@ function LspClient.new(opts)
     self.on_progress = opts.on_progress
     self.on_job_completed = opts.on_job_completed
     self.on_backend_info = opts.on_backend_info
+    self.get_backend_name = opts.get_backend_name
     return self
+end
+
+function LspClient:_get_backend_name()
+    if self.get_backend_name then
+        return self.get_backend_name()
+    end
+    return DEFAULT_BACKEND_NAME
 end
 
 function LspClient:_resolve_cmd()
@@ -99,7 +109,7 @@ function LspClient:start(bufnr)
 
     local config = self:_create_client_config()
     if not config then
-        vim.notify("[AgentAmp] LSP binary not found. Build with 'cargo build --release' or specify cmd in setup()", vim.log.levels.WARN)
+        vim.notify("[" .. self:_get_backend_name() .. "] LSP binary not found. Build with 'cargo build --release' or specify cmd in setup()", vim.log.levels.WARN)
         return nil
     end
 
@@ -116,7 +126,7 @@ function LspClient:start(bufnr)
     local client_id = vim.lsp.start(config, start_opts)
 
     if not client_id then
-        vim.notify("[AgentAmp] Failed to start LSP client", vim.log.levels.ERROR)
+        vim.notify("[" .. self:_get_backend_name() .. "] Failed to start LSP client", vim.log.levels.ERROR)
         return nil
     end
 
@@ -178,7 +188,7 @@ function LspClient:request_code_actions(bufnr, callback)
 
     vim.lsp.buf_request(bufnr, "textDocument/codeAction", params, function(err, result)
         if err then
-            vim.notify("[AgentAmp] Code action request failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+            vim.notify("[" .. self:_get_backend_name() .. "] Code action request failed: " .. vim.inspect(err), vim.log.levels.ERROR)
             callback(nil)
             return
         end
@@ -194,13 +204,13 @@ function LspClient:execute_command(bufnr, command)
 
     local client = vim.lsp.get_client_by_id(client_id)
     if not client then
-        vim.notify("[AgentAmp] LSP client not found", vim.log.levels.ERROR)
+        vim.notify("[" .. self:_get_backend_name() .. "] LSP client not found", vim.log.levels.ERROR)
         return
     end
 
     client.request("workspace/executeCommand", command, function(err, _result)
         if err then
-            vim.notify("[AgentAmp] Execute command failed: " .. vim.inspect(err), vim.log.levels.ERROR)
+            vim.notify("[" .. self:_get_backend_name() .. "] Execute command failed: " .. vim.inspect(err), vim.log.levels.ERROR)
         end
     end, bufnr)
 end
