@@ -26,6 +26,7 @@ use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
 pub const COMMAND_IMPL_FUNCTION: &str = "amp.implFunction";
 pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "amp/implFunctionProgress";
 pub const NOTIFICATION_JOB_COMPLETED: &str = "amp/jobCompleted";
+pub const NOTIFICATION_BACKEND_INFO: &str = "agent/backendInfo";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImplFunctionProgressParams {
@@ -45,6 +46,11 @@ pub struct JobCompletedParams {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackendInfoParams {
+    pub name: String,
 }
 
 pub struct RequestHandler<'a> {

@@ -21,9 +21,14 @@ use lsp_types::{
 use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
+use crate::config::CURRENT_BACKEND;
 use crate::document_store::DocumentStore;
-use crate::handlers::{NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION};
+use crate::handlers::{
+    BackendInfoParams, NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION,
+    NOTIFICATION_BACKEND_INFO,
+};
 use crate::job_tracker::JobTracker;
+use crate::lsp_utils::LspClient;
 
 struct Server {
     connection: Connection,
@@ -74,6 +79,17 @@ impl Server {
 
     fn run(&self, params: serde_json::Value) -> Result<(), Box<dyn Error + Sync + Send>> {
         let _init_params: InitializeParams = serde_json::from_value(params)?;
+
+        // Send backend info notification to inform client which backend is being used
+        let lsp_client = LspClient::new(&self.connection);
+        let backend_name = CURRENT_BACKEND.display_name();
+        lsp_client.send_notification(
+            NOTIFICATION_BACKEND_INFO,
+            BackendInfoParams {
+                name: backend_name.to_string(),
+            },
+        )?;
+        info!("Sent backend info notification: {}", backend_name);
 
         for msg in &self.connection.receiver {
             match msg {
