@@ -139,11 +139,12 @@ impl<'a> RequestHandler<'a> {
             None => return lsp_client.send_success(req, json!([])),
         };
 
+        let backend_name = CURRENT_BACKEND.display_name();
         let action = CodeAction {
-            title: "Implement function with Amp".to_string(),
+            title: format!("Implement function with {}", backend_name),
             kind: Some(CodeActionKind::QUICKFIX),
             command: Some(lsp_types::Command {
-                title: "Implement function with Amp".to_string(),
+                title: format!("Implement function with {}", backend_name),
                 command: COMMAND_IMPL_FUNCTION.to_string(),
                 arguments: Some(vec![
                     json!(uri.to_string()),

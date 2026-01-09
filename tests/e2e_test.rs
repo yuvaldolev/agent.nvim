@@ -3,6 +3,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::Duration;
 
+use agent_lsp::config::CURRENT_BACKEND;
 use serde_json::{json, Value};
 
 fn set_nonblocking(fd: RawFd, nonblocking: bool) {
@@ -353,10 +354,8 @@ fn test_did_open_and_code_action() {
     assert!(!actions.is_empty(), "Expected at least one code action");
 
     let action = &actions[0];
-    assert_eq!(
-        action["title"].as_str().unwrap(),
-        "Implement function with Amp"
-    );
+    let expected_title = format!("Implement function with {}", CURRENT_BACKEND.display_name());
+    assert_eq!(action["title"].as_str().unwrap(), expected_title);
     assert_eq!(
         action["command"]["command"].as_str().unwrap(),
         "agent.implFunction"
