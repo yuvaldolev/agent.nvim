@@ -11,7 +11,7 @@ agent.nvim provides a seamless integration between Neovim and the Amp AI coding 
 
 ## Features
 
-- **`:AmpImplementFunction`** — Implement the function at the cursor position using AI
+- **`:AgentImplementFunction`** — Implement the function at the cursor position using AI
 - **Streaming progress** — See incremental AI output as ghost text while the implementation is being generated
 - **Multiple parallel implementations** — Implement up to 10 functions simultaneously in the same file
 - **Live updates** — Each implementation applies immediately when complete, no waiting for all jobs
@@ -97,7 +97,7 @@ After changing configuration, rebuild with `cargo build --release`.
 
 1. Open a file in Neovim
 2. Position your cursor on a function with `todo!()` or similar placeholder
-3. Run `:AmpImplementFunction`
+3. Run `:AgentImplementFunction`
 4. Wait for the spinner to complete — the implementation will be inserted automatically
 
 You can also call the function programmatically:
@@ -109,14 +109,14 @@ require("agent_amp").implement_function()
 Or create a custom keybinding:
 
 ```lua
-vim.keymap.set("n", "<leader>ai", require("agent_amp").implement_function, { desc = "Implement function with Amp" })
+vim.keymap.set("n", "<leader>ai", require("agent_amp").implement_function, { desc = "Implement function with AI agent" })
 ```
 
 ### Concurrent Implementations
 
 agent.nvim supports implementing multiple functions simultaneously in the same file:
 
-1. **Trigger multiple implementations**: Run `:AmpImplementFunction` on different functions without waiting
+1. **Trigger multiple implementations**: Run `:AgentImplementFunction` on different functions without waiting
 2. **Visual feedback**: Each function gets its own spinner and ghost text preview
 3. **Live updates**: Implementations apply as soon as they complete
 4. **Automatic line tracking**: Spinners automatically move when other implementations shift line numbers
@@ -127,15 +127,15 @@ agent.nvim supports implementing multiple functions simultaneously in the same f
 ```
 File: math.rs
 ──────────────────
-fn add(a: i32, b: i32) -> i32 {     ← Run :AmpImplementFunction here
+fn add(a: i32, b: i32) -> i32 {     ← Run :AgentImplementFunction here
     todo!()
 }
 
-fn subtract(a: i32, b: i32) -> i32 { ← Run :AmpImplementFunction here
+fn subtract(a: i32, b: i32) -> i32 { ← Run :AgentImplementFunction here
     todo!()
 }
 
-fn multiply(a: i32, b: i32) -> i32 { ← Run :AmpImplementFunction here
+fn multiply(a: i32, b: i32) -> i32 { ← Run :AgentImplementFunction here
     todo!()
 }
 ──────────────────
@@ -207,7 +207,7 @@ sequenceDiagram
     participant LSP as agent-lsp
     participant Backend as Backend CLI
 
-    User->>Neovim: :AmpImplementFunction
+    User->>Neovim: :AgentImplementFunction
     Neovim->>Plugin: implement_function()
     Plugin->>LSP: textDocument/codeAction
     LSP-->>Plugin: CodeAction (amp.implFunction)
@@ -279,7 +279,7 @@ src/
 | `textDocument/didOpen` | Track opened documents |
 | `textDocument/didChange` | Incremental sync to DocumentStore |
 | `textDocument/completion` | Stub (returns null) |
-| `textDocument/codeAction` | Returns "Implement function with Amp" action |
+| `textDocument/codeAction` | Returns "Implement function with AI agent" action |
 | `workspace/executeCommand` | Handles `amp.implFunction`, spawns concurrent workers |
 | `amp/implFunctionProgress` | Server-to-client notification with streaming preview and line updates |
 | `amp/jobCompleted` | Server-to-client notification when job finishes (success/error) |
@@ -302,7 +302,7 @@ nvim-plugin/
 
 | Module | Description |
 |--------|-------------|
-| `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AmpImplementFunction` command, handles progress and job completion callbacks |
+| `init.lua` | Plugin entry point. Creates `AgentAmp` instance, registers `:AgentImplementFunction` command, handles progress and job completion callbacks |
 | `lsp.lua` | `LspClient` class. Manages LSP lifecycle, automatic binary resolution, handles `workspace/applyEdit`, `amp/implFunctionProgress`, and `amp/jobCompleted` notifications |
 | `spinner.lua` | `SpinnerManager` class. Manages multiple concurrent spinners with job tracking, 120s timeout per job, line updates, and ghost text preview support |
 

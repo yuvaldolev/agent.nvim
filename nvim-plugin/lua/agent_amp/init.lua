@@ -219,9 +219,9 @@ function M.setup(opts)
     opts = opts or {}
     instance = AgentAmp.new(opts)
 
-    vim.api.nvim_create_user_command("AmpImplementFunction", function()
+    vim.api.nvim_create_user_command("AgentImplementFunction", function()
         M.implement_function()
-    end, { desc = "Implement function with Amp AI" })
+    end, { desc = "Implement function with AI agent" })
 
     local augroup = vim.api.nvim_create_augroup("AgentAmp", { clear = true })
 
