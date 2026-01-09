@@ -4,8 +4,9 @@ Spinner.__index = Spinner
 local FRAMES = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
 local INTERVAL_MS = 80
 local TIMEOUT_MS = 120000
+local DEFAULT_BACKEND_NAME = "Agent"
 
-function Spinner.new(ns_id)
+function Spinner.new(ns_id, backend_name)
     local self = setmetatable({}, Spinner)
     self.timer = nil
     self.bufnr = nil
@@ -15,6 +16,7 @@ function Spinner.new(ns_id)
     self.extmark_id = nil
     self.timeout_timer = nil
     self.preview_lines = nil
+    self.backend_name = backend_name or DEFAULT_BACKEND_NAME
     return self
 end
 
@@ -32,7 +34,7 @@ function Spinner:start(bufnr, line)
 
     self.timeout_timer = vim.loop.new_timer()
     self.timeout_timer:start(TIMEOUT_MS, 0, vim.schedule_wrap(function()
-        vim.notify("[AgentAmp] Request timed out", vim.log.levels.WARN)
+        vim.notify("[" .. self.backend_name .. "] Request timed out", vim.log.levels.WARN)
         self:stop()
     end))
 end
@@ -102,7 +104,7 @@ function Spinner:_update()
 
     local frame = FRAMES[self.frame_idx]
     local extmark_opts = {
-        virt_text = { { " " .. frame .. " Implementing with Amp...", "Comment" } },
+        virt_text = { { " " .. frame .. " Implementing with " .. self.backend_name .. "...", "Comment" } },
         virt_text_pos = "eol",
     }
 
@@ -126,7 +128,16 @@ function SpinnerManager.new()
     local self = setmetatable({}, SpinnerManager)
     self.ns_id = vim.api.nvim_create_namespace("agent_amp_spinner")
     self.spinners = {}
+    self.backend_name = DEFAULT_BACKEND_NAME
     return self
+end
+
+function SpinnerManager:set_backend_name(name)
+    self.backend_name = name or DEFAULT_BACKEND_NAME
+end
+
+function SpinnerManager:get_backend_name()
+    return self.backend_name
 end
 
 function SpinnerManager:start(job_id, bufnr, line)
@@ -134,7 +145,7 @@ function SpinnerManager:start(job_id, bufnr, line)
         self.spinners[job_id]:stop()
     end
 
-    local spinner = Spinner.new(self.ns_id)
+    local spinner = Spinner.new(self.ns_id, self.backend_name)
     spinner:start(bufnr, line)
     self.spinners[job_id] = spinner
 end
