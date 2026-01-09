@@ -18,7 +18,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::backend::create_backend;
-use crate::config::DELETE_TEMP_FILES;
+use crate::config::{DELETE_TEMP_FILES, CURRENT_BACKEND};
 use crate::document_store::DocumentStore;
 use crate::job_tracker::JobTracker;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
@@ -26,6 +26,7 @@ use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
 pub const COMMAND_IMPL_FUNCTION: &str = "amp.implFunction";
 pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "amp/implFunctionProgress";
 pub const NOTIFICATION_JOB_COMPLETED: &str = "amp/jobCompleted";
+pub const NOTIFICATION_BACKEND_INFO: &str = "agent/backendInfo";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImplFunctionProgressParams {
@@ -45,6 +46,28 @@ pub struct JobCompletedParams {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pending_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BackendInfoParams {
+    pub name: String,
+}
+
+/// Sends the backend info notification to inform the client which backend is being used.
+/// This should be called immediately after LSP initialization completes.
+pub fn send_backend_info_notification(
+    connection: &Connection,
+) -> Result<(), Box<dyn Error + Sync + Send>> {
+    let lsp_client = LspClient::new(connection);
+    let backend_name = CURRENT_BACKEND.display_name();
+    lsp_client.send_notification(
+        NOTIFICATION_BACKEND_INFO,
+        BackendInfoParams {
+            name: backend_name.to_string(),
+        },
+    )?;
+    info!("Sent backend info notification: {}", backend_name);
+    Ok(())
 }
 
 pub struct RequestHandler<'a> {

@@ -22,7 +22,9 @@ use tracing::{info, Level};
 use tracing_subscriber::FmtSubscriber;
 
 use crate::document_store::DocumentStore;
-use crate::handlers::{NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION};
+use crate::handlers::{
+    send_backend_info_notification, NotificationHandler, RequestHandler, COMMAND_IMPL_FUNCTION,
+};
 use crate::job_tracker::JobTracker;
 
 struct Server {
@@ -74,6 +76,9 @@ impl Server {
 
     fn run(&self, params: serde_json::Value) -> Result<(), Box<dyn Error + Sync + Send>> {
         let _init_params: InitializeParams = serde_json::from_value(params)?;
+
+        // Send backend info notification to inform client which backend is being used
+        send_backend_info_notification(&self.connection)?;
 
         for msg in &self.connection.receiver {
             match msg {

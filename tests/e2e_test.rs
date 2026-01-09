@@ -212,6 +212,12 @@ impl LspClient {
         });
         let response = self.send_request("initialize", init_params);
         self.send_notification("initialized", json!({}));
+
+        // After initialization, server sends agent/backendInfo notification
+        // We need to consume it to avoid it interfering with subsequent requests
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = self.try_read_message(Duration::from_millis(100));
+
         response
     }
 
