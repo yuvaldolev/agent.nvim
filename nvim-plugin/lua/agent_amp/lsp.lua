@@ -72,12 +72,12 @@ function LspClient:_create_client_config()
                 end
                 return { applied = true }
             end,
-            ["amp/implFunctionProgress"] = function(_err, params, _ctx)
+            ["agent/implFunctionProgress"] = function(_err, params, _ctx)
                 if self.on_progress then
                     self.on_progress(params)
                 end
             end,
-            ["amp/jobCompleted"] = function(_err, params, _ctx)
+            ["agent/jobCompleted"] = function(_err, params, _ctx)
                 if self.on_job_completed then
                     self.on_job_completed(params)
                 end

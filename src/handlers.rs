@@ -18,14 +18,14 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::backend::create_backend;
-use crate::config::{DELETE_TEMP_FILES, CURRENT_BACKEND};
+use crate::config::{CURRENT_BACKEND, DELETE_TEMP_FILES};
 use crate::document_store::DocumentStore;
 use crate::job_tracker::JobTracker;
 use crate::lsp_utils::{LspClient, WorkspaceEditBuilder};
 
-pub const COMMAND_IMPL_FUNCTION: &str = "amp.implFunction";
-pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "amp/implFunctionProgress";
-pub const NOTIFICATION_JOB_COMPLETED: &str = "amp/jobCompleted";
+pub const COMMAND_IMPL_FUNCTION: &str = "agent.implFunction";
+pub const NOTIFICATION_IMPL_FUNCTION_PROGRESS: &str = "agent/implFunctionProgress";
+pub const NOTIFICATION_JOB_COMPLETED: &str = "agent/jobCompleted";
 pub const NOTIFICATION_BACKEND_INFO: &str = "agent/backendInfo";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -175,7 +175,7 @@ impl<'a> RequestHandler<'a> {
 
         let args = &params.arguments;
         if args.len() < 5 {
-            return lsp_client.send_invalid_params(req, "Missing arguments for amp.implFunction");
+            return lsp_client.send_invalid_params(req, "Missing arguments for agent.implFunction");
         }
 
         let uri_str: String = serde_json::from_value(args[0].clone())?;
@@ -388,7 +388,11 @@ fn spawn_implementation_worker(
                     job_id,
                     original_line,
                     function_signature,
-                    implementation.lines().take(5).collect::<Vec<_>>().join("\n")
+                    implementation
+                        .lines()
+                        .take(5)
+                        .collect::<Vec<_>>()
+                        .join("\n")
                 );
 
                 // Clean up the temp file if configured to do so

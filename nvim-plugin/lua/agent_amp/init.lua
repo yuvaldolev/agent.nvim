@@ -167,7 +167,7 @@ function AgentAmp:implement_function()
             if not cmd and action.edit == nil then
                 cmd = action
             end
-            if cmd and cmd.command == "amp.implFunction" then
+            if cmd and cmd.command == "agent.implFunction" then
                 amp_action = cmd
                 break
             end

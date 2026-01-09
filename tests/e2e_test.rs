@@ -297,8 +297,8 @@ fn test_initialization() {
         .map(|v| v.as_str().unwrap())
         .collect();
     assert!(
-        commands_vec.contains(&"amp.implFunction"),
-        "Expected amp.implFunction command"
+        commands_vec.contains(&"agent.implFunction"),
+        "Expected agent.implFunction command"
     );
 
     client.shutdown();
@@ -359,7 +359,7 @@ fn test_did_open_and_code_action() {
     );
     assert_eq!(
         action["command"]["command"].as_str().unwrap(),
-        "amp.implFunction"
+        "agent.implFunction"
     );
 
     let args = action["command"]["arguments"].as_array().unwrap();
@@ -519,7 +519,7 @@ fn main() {
     let response = client.send_request(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [
                 test_uri,
                 0,
@@ -638,7 +638,7 @@ fn third_function(z: i32) -> i32 {
     let response = client.send_request(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [
                 test_uri,
                 12,
@@ -794,12 +794,12 @@ fn subtract(a: i32, b: i32) -> i32 {
 
     std::thread::sleep(Duration::from_millis(50));
 
-    println!("\n=== Sending 3 concurrent amp.implFunction commands ===");
+    println!("\n=== Sending 3 concurrent agent.implFunction commands ===");
 
     let req_id_1 = client.send_request_async(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [test_uri_1, 1, 0, 1, "rust"]
         }),
     );
@@ -807,7 +807,7 @@ fn subtract(a: i32, b: i32) -> i32 {
     let req_id_2 = client.send_request_async(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [test_uri_2, 1, 0, 1, "rust"]
         }),
     );
@@ -815,7 +815,7 @@ fn subtract(a: i32, b: i32) -> i32 {
     let req_id_3 = client.send_request_async(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [test_uri_3, 1, 0, 1, "rust"]
         }),
     );
@@ -843,7 +843,7 @@ fn subtract(a: i32, b: i32) -> i32 {
                 apply_edits.push(msg.clone());
             }
         } else if let Some(method) = msg.get("method") {
-            if method.as_str() == Some("amp/implFunctionProgress") {
+            if method.as_str() == Some("agent/implFunctionProgress") {
                 progress_notifications.push(msg.clone());
             }
         }
@@ -1047,7 +1047,7 @@ fn multiply(a: i32, b: i32) -> i32 {
     let req_id_1 = client.send_request_async(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [test_uri, 0, 0, 1, "rust"] // add function at line 0
         }),
     );
@@ -1055,7 +1055,7 @@ fn multiply(a: i32, b: i32) -> i32 {
     let req_id_2 = client.send_request_async(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [test_uri, 4, 0, 1, "rust"] // subtract function at line 4
         }),
     );
@@ -1063,7 +1063,7 @@ fn multiply(a: i32, b: i32) -> i32 {
     let req_id_3 = client.send_request_async(
         "workspace/executeCommand",
         json!({
-            "command": "amp.implFunction",
+            "command": "agent.implFunction",
             "arguments": [test_uri, 8, 0, 1, "rust"] // multiply function at line 8
         }),
     );
@@ -1094,10 +1094,10 @@ fn multiply(a: i32, b: i32) -> i32 {
             }
         } else if let Some(method) = msg.get("method") {
             match method.as_str() {
-                Some("amp/implFunctionProgress") => {
+                Some("agent/implFunctionProgress") => {
                     progress_notifications.push(msg.clone());
                 }
-                Some("amp/jobCompleted") => {
+                Some("agent/jobCompleted") => {
                     job_completed_notifications.push(msg.clone());
                 }
                 _ => {}
@@ -1254,7 +1254,7 @@ fn test_max_concurrent_jobs_limit() {
         let req_id = client.send_request_async(
             "workspace/executeCommand",
             json!({
-                "command": "amp.implFunction",
+                "command": "agent.implFunction",
                 "arguments": [test_uri, line, 0, 1, "rust"]
             }),
         );
