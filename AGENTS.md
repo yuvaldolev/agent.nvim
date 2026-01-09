@@ -52,18 +52,20 @@ lua nvim-plugin/tests/init_spec.lua     # Run init tests
 
 ### Ignored Tests (require backend CLI)
 
-These tests are ignored by default because they require the configured backend CLI (amp or opencode) to be available:
+These tests are ignored by default because they require the configured backend CLI (amp, opencode, or claude) to be available:
 
 ```bash
 cargo test --test e2e_test -- --ignored --nocapture  # Run ignored tests with output
 cargo test test_execute_command_prints_modifications -- --ignored --nocapture
 cargo test test_single_function_modification -- --ignored --nocapture
+cargo test test_claude_code_integration -- --ignored --nocapture
 ```
 
 - `test_execute_command_prints_modifications`: Calls backend CLI and prints the workspace/applyEdit modifications for visual inspection
 - `test_single_function_modification`: Verifies that only the targeted function is modified when there are multiple functions in a file
 - `test_concurrent_implementations`: Tests concurrent function implementations across multiple files
 - `test_concurrent_same_file_implementations`: Tests multiple concurrent implementations in the same file
+- `test_claude_code_integration`: Tests the ClaudeCodeClient directly by invoking the `claude` CLI (requires claude CLI installed)
 
 ## Architecture
 
@@ -145,6 +147,7 @@ After changing any configuration, rebuild the server with `cargo build`.
 
 - **Amp**: Requires `amp` CLI to be installed and authenticated
 - **OpenCode**: Requires `opencode` CLI to be installed and authenticated
+- **ClaudeCode**: Requires `claude` CLI to be installed and authenticated
 
 ## Design Decisions
 

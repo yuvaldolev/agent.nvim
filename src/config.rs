@@ -5,6 +5,8 @@ pub enum BackendType {
     Amp,
     /// Use OpenCode CLI for function implementation.
     OpenCode,
+    /// Use Claude Code CLI for function implementation.
+    ClaudeCode,
 }
 
 /// The currently selected backend for function implementation.

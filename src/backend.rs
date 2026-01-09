@@ -1,6 +1,7 @@
 use std::error::Error;
 
 use crate::amp::AmpClient;
+use crate::claude_code::ClaudeCodeClient;
 use crate::config::{BackendType, CURRENT_BACKEND};
 use crate::opencode::OpenCodeClient;
 
@@ -51,6 +52,7 @@ pub fn create_backend() -> Box<dyn Backend> {
     match CURRENT_BACKEND {
         BackendType::Amp => Box::new(AmpClient::new()),
         BackendType::OpenCode => Box::new(OpenCodeClient::new()),
+        BackendType::ClaudeCode => Box::new(ClaudeCodeClient::new()),
     }
 }
 
